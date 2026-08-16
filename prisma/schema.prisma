@@ -1,0 +1,590 @@
+// Data model for the editorial e-commerce directory.
+// Mirrors docs/ARCHITECTURE.md §6. Comments record WHY a column exists where
+// the reason is not obvious from the name — those reasons are load-bearing.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────── enums ───────────────────────────
+enum Role {
+  SHOPPER
+  OWNER
+  ADMIN
+}
+
+enum AccountStatus {
+  ACTIVE
+  SUSPENDED
+  BANNED
+}
+
+enum Tier {
+  NONE
+  T1
+  T2
+  T3
+}
+
+enum BillingStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+}
+
+enum StoreStatus {
+  DRAFT
+  PUBLISHED
+  FLAGGED
+  SUSPENDED
+}
+
+enum CollectionKind {
+  PILL // curated editorial filter shown as a discovery pill
+  SPOTLIGHT // Store of the Week rotation
+}
+
+enum ClickKind {
+  ENTER
+  PRODUCT
+}
+
+enum TargetType {
+  THREAD
+  POST
+  STORE
+}
+
+enum ReportStatus {
+  OPEN
+  ACTIONED
+  DISMISSED
+}
+
+enum PlacementMedium {
+  DISPLAY
+  PRINT
+  PACKAGING
+}
+
+// ─────────────────────────── identity ───────────────────────────
+
+// One users table with a role flag rather than two disjoint account types.
+// Owners browse and save like anyone else; splitting the tables guarantees a
+// bug where an owner cannot bookmark a peer.
+model User {
+  id                String        @id @default(cuid())
+  email             String?       @unique
+  emailVerified     DateTime?
+  passwordHash      String? // owners/admins only; null for social accounts
+  name              String?
+  image             String?
+  role              Role          @default(SHOPPER)
+  status            AccountStatus @default(ACTIVE)
+  suspendedReason   String?
+  subscriptionTier  Tier          @default(NONE)
+  billingStatus     BillingStatus @default(TRIALING)
+  trialEndsAt       DateTime?
+  paymentCustomerId String?
+  createdAt         DateTime      @default(now())
+  lastSeenAt        DateTime      @default(now())
+
+  accounts       Account[]
+  sessions       Session[]
+  store          Store?
+  savedStores    SavedStore[]
+  viewHistory    ViewHistory[]
+  searchLog      SearchLog[]
+  threads        ForumThread[]
+  posts          ForumPost[]
+  votes          ForumVote[]
+  likes          ForumLike[]
+  boardPrefs     UserBoardPref[]
+  reportsFiled   Report[]        @relation("reporter")
+  adminAuditRows AdminAuditLog[] @relation("adminActor")
+
+  @@index([role, status])
+  @@map("users")
+}
+
+// Auth.js adapter tables.
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ─────────────────────────── catalog ───────────────────────────
+
+model Store {
+  id      String @id @default(cuid())
+  ownerId String @unique
+  slug    String @unique
+
+  name      String
+  monogram  String @db.VarChar(3) // fallback mark when no logo is uploaded
+  logoUrl   String?
+  // Hard cap at the database, not only in the UI. A UI-only limit drifts the
+  // moment anything else writes to the column.
+  story     String @db.VarChar(150)
+  homeUrl   String // the Enter destination
+
+  categoryId String?
+  status     StoreStatus @default(PUBLISHED) // auto-publish on submission (D2)
+
+  // Verification reviews the storefront, so the flag lives on the store.
+  // Deliberately NOT correlated with tier: a purchasable badge is not a trust signal.
+  isVerifiedMaker   Boolean   @default(false)
+  verificationState String    @default("PENDING") // PENDING | GRANTED | DENIED
+  verifiedAt        DateTime?
+  verifiedByAdminId String?
+
+  // Denormalised counters are a cache for headline numbers only. Trend
+  // questions are answered from ClickEvent, never from these.
+  impressionCount Int @default(0)
+  enterClickCount Int @default(0)
+  savedCount      Int @default(0)
+
+  publishedAt   DateTime  @default(now())
+  lastEditedAt  DateTime  @updatedAt
+  lastAuditedAt DateTime?
+  createdAt     DateTime  @default(now())
+
+  owner       User              @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  category    Category?         @relation(fields: [categoryId], references: [id])
+  products    Product[]
+  tags        StoreTag[]
+  collections CollectionStore[]
+  savedBy     SavedStore[]
+  views       ViewHistory[]
+  clicks      ClickEvent[]
+  placements  AdPlacement[]
+  overrides   OverrideNotice[]
+  sharedIn    ForumThread[]     @relation("sharedStore")
+
+  @@index([status, publishedAt])
+  @@index([categoryId])
+  @@map("stores")
+}
+
+// Five slots, enforced structurally: sortOrder is unique per store and
+// constrained to 0..4 by a CHECK added in migrations/constraints.sql.
+model Product {
+  id             String   @id @default(cuid())
+  storeId        String
+  imageUrl       String
+  title          String
+  destinationUrl String
+  sortOrder      Int
+  clickCount     Int      @default(0)
+  createdAt      DateTime @default(now())
+
+  store  Store        @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  clicks ClickEvent[]
+
+  @@unique([storeId, sortOrder])
+  @@map("products")
+}
+
+model Category {
+  id        String  @id @default(cuid())
+  slug      String  @unique
+  name      String
+  sortOrder Int     @default(0)
+  stores    Store[]
+
+  @@map("categories")
+}
+
+model Tag {
+  id     String     @id @default(cuid())
+  slug   String     @unique
+  name   String
+  stores StoreTag[]
+
+  @@map("tags")
+}
+
+model StoreTag {
+  storeId String
+  tagId   String
+  store   Store  @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  tag     Tag    @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([storeId, tagId])
+  @@map("store_tags")
+}
+
+// Discovery pills and the Spotlight Hero are the same mechanism: scheduled,
+// admin-curated data. The hero is never hardcoded in a template.
+model Collection {
+  id               String         @id @default(cuid())
+  slug             String         @unique
+  name             String
+  kind             CollectionKind @default(PILL)
+  isActive         Boolean        @default(true)
+  sortOrder        Int            @default(0)
+  curatedByAdminId String?
+
+  stores CollectionStore[]
+
+  @@map("collections")
+}
+
+model CollectionStore {
+  collectionId String
+  storeId      String
+  sortOrder    Int       @default(0)
+  startsAt     DateTime?
+  endsAt       DateTime?
+
+  collection Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  store      Store      @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@id([collectionId, storeId])
+  @@map("collection_stores")
+}
+
+// ─────────────────────────── shopper state ───────────────────────────
+
+// The strongest first-party signal the platform owns. A merchant cannot see
+// this in their own analytics, which is why it leads the merchant dashboard.
+model SavedStore {
+  userId    String
+  storeId   String
+  createdAt DateTime @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@id([userId, storeId])
+  @@index([storeId])
+  @@map("saved_stores")
+}
+
+model ViewHistory {
+  id       String   @id @default(cuid())
+  userId   String
+  storeId  String
+  viewedAt DateTime @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([userId, viewedAt])
+  @@map("view_history")
+}
+
+// Anonymous rows carry no IP and no device fingerprint. Without that rule this
+// table is a privacy liability with no offsetting value.
+model SearchLog {
+  id          String   @id @default(cuid())
+  userId      String?
+  query       String
+  filtersJson Json?
+  resultCount Int      @default(0)
+  searchedAt  DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([searchedAt])
+  @@map("search_log")
+}
+
+// Raw events. The counters on Store/Product are a cache of these; reconstructing
+// history from counters is impossible, so the events are the source of truth.
+model ClickEvent {
+  id        String    @id @default(cuid())
+  kind      ClickKind
+  storeId   String?
+  productId String?
+  userId    String?
+  createdAt DateTime  @default(now())
+
+  store   Store?   @relation(fields: [storeId], references: [id], onDelete: SetNull)
+  product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@index([storeId, createdAt])
+  @@index([productId, createdAt])
+  @@map("click_events")
+}
+
+// ─────────────────────────── community ───────────────────────────
+
+model ForumBoard {
+  id          String  @id @default(cuid())
+  slug        String  @unique
+  name        String
+  description String?
+  sortOrder   Int     @default(0)
+  isArchived  Boolean @default(false) // archive hides; deletion is not offered
+
+  threads ForumThread[]
+  prefs   UserBoardPref[]
+
+  @@map("forum_boards")
+}
+
+// The thread URL is /community/t/:id and never encodes the board slug —
+// admins can move threads between boards, and a slug in the URL would break
+// every existing link on each move.
+model ForumThread {
+  id       String @id @default(cuid())
+  boardId  String
+  authorId String
+  title    String
+  body     String
+
+  sharedStoreId String? // inline Store Card attachment
+
+  score      Int     @default(0) // vote rank; likes deliberately do not affect it
+  likeCount  Int     @default(0)
+  replyCount Int     @default(0)
+  isPinned   Boolean @default(false)
+  isLocked   Boolean @default(false)
+
+  // Admin deletion preserves the original text for the audit trail; a user
+  // deleting their own content tombstones instead. Different operations.
+  isDeleted        Boolean   @default(false)
+  deletedByAdminId String?
+  deletedAt        DateTime?
+
+  createdAt DateTime @default(now())
+
+  board       ForumBoard  @relation(fields: [boardId], references: [id], onDelete: Restrict)
+  author      User        @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  sharedStore Store?      @relation("sharedStore", fields: [sharedStoreId], references: [id], onDelete: SetNull)
+  posts       ForumPost[]
+
+  @@index([boardId, isPinned, createdAt])
+  @@map("forum_threads")
+}
+
+model ForumPost {
+  id           String  @id @default(cuid())
+  threadId     String
+  parentPostId String?
+  authorId     String
+  body         String
+
+  score     Int     @default(0)
+  likeCount Int     @default(0)
+
+  isDeleted        Boolean   @default(false)
+  deletedByAdminId String?
+  deletedAt        DateTime?
+
+  createdAt DateTime @default(now())
+
+  thread ForumThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  author User        @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([threadId, createdAt])
+  @@map("forum_posts")
+}
+
+// Votes rank content.
+model ForumVote {
+  userId     String
+  targetType TargetType
+  targetId   String
+  value      Int // +1 or -1
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, targetType, targetId])
+  @@map("forum_votes")
+}
+
+// Likes signal appreciation without touching rank. Separate table on purpose:
+// collapsing the two loses the ability to sort by one and display the other.
+model ForumLike {
+  userId     String
+  targetType TargetType
+  targetId   String
+  createdAt  DateTime   @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, targetType, targetId])
+  @@index([targetType, targetId])
+  @@map("forum_likes")
+}
+
+// Per-user sidebar state, so it can never be cached alongside the global board list.
+model UserBoardPref {
+  userId    String
+  boardId   String
+  isPinned  Boolean @default(false)
+  isHidden  Boolean @default(false)
+  sortOrder Int     @default(0)
+
+  user  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  board ForumBoard @relation(fields: [boardId], references: [id], onDelete: Cascade)
+
+  @@id([userId, boardId])
+  @@map("user_board_prefs")
+}
+
+// Grouped by target in the admin queue: ten reports on one comment surface as
+// one item with a count, not ten rows.
+model Report {
+  id         String       @id @default(cuid())
+  reporterId String
+  targetType TargetType
+  targetId   String
+  reason     String
+  notes      String?
+  status     ReportStatus @default(OPEN)
+
+  resolvedByAdminId String?
+  resolutionNote    String?
+  createdAt         DateTime  @default(now())
+  resolvedAt        DateTime?
+
+  reporter User @relation("reporter", fields: [reporterId], references: [id], onDelete: Cascade)
+
+  @@index([status, targetType, targetId])
+  @@map("reports")
+}
+
+// ─────────────────────────── phygital resolver ───────────────────────────
+
+model AdPlacement {
+  id      String  @id @default(cuid())
+  code    String  @unique // the /r/:code token
+  storeId String?
+
+  venueName    String?
+  venueAddress String?
+  lat          Float?
+  lng          Float?
+  medium       PlacementMedium @default(DISPLAY)
+
+  activeFrom       DateTime?
+  activeTo         DateTime?
+  currentTargetUrl String
+  scanCount        Int       @default(0)
+  createdAt        DateTime  @default(now())
+
+  store  Store?           @relation(fields: [storeId], references: [id], onDelete: SetNull)
+  routes PlacementRoute[]
+  scans  ScanEvent[]
+
+  @@map("ad_placements")
+}
+
+// Re-routing history. Without it you cannot explain a scan-count change to a
+// merchant who has changed the destination three times.
+model PlacementRoute {
+  id          String   @id @default(cuid())
+  placementId String
+  targetUrl   String
+  setById     String?
+  setAt       DateTime @default(now())
+
+  placement AdPlacement @relation(fields: [placementId], references: [id], onDelete: Cascade)
+
+  @@index([placementId, setAt])
+  @@map("placement_routes")
+}
+
+model ScanEvent {
+  id                String   @id @default(cuid())
+  placementId       String?
+  code              String
+  resolvedTargetUrl String
+  deviceType        String?
+  coarseGeo         String?
+  scannedAt         DateTime @default(now())
+
+  placement AdPlacement? @relation(fields: [placementId], references: [id], onDelete: SetNull)
+
+  @@index([placementId, scannedAt])
+  @@map("scan_events")
+}
+
+// ─────────────────────────── governance ───────────────────────────
+
+// Append-only. There is no update or delete path, for anyone, including
+// admins. A rewritable record of admin actions is worthless in exactly the
+// situation you would need it.
+model AdminAuditLog {
+  id         String   @id @default(cuid())
+  adminId    String
+  action     String
+  targetType String
+  targetId   String
+  beforeJson Json?
+  afterJson  Json?
+  reason     String?
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  admin User @relation("adminActor", fields: [adminId], references: [id], onDelete: Restrict)
+
+  @@index([createdAt])
+  @@index([targetType, targetId])
+  @@map("admin_audit_log")
+}
+
+// Drives the in-portal "edited by support" banner. An override the merchant is
+// never told about is a chargeback waiting to happen.
+model OverrideNotice {
+  id      String @id @default(cuid())
+  storeId String
+  field   String
+
+  beforeValue String
+  afterValue  String
+  reason      String
+  adminId     String
+
+  acknowledgedAt DateTime?
+  revertedAt     DateTime?
+  createdAt      DateTime  @default(now())
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, acknowledgedAt])
+  @@map("override_notices")
+}
