@@ -1,0 +1,16 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+body {
+  @apply bg-white text-ink antialiased;
+}
+
+.eyebrow {
+  @apply font-mono text-[10.5px] uppercase tracking-[0.16em] text-ink-3;
+}
