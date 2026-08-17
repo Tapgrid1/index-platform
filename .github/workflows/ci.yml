@@ -1,9 +1,16 @@
 name: CI
 
 on:
+  # Branch pushes are covered by the pull_request trigger; listing '**' here as
+  # well runs every check twice on any branch with a PR open.
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
+
+# A new push makes the in-flight run's answer irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   verify:
