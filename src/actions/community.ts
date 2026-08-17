@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { db } from '@/lib/db';
 import { requireUser } from '@/lib/authz';
+import { enforce } from '@/lib/rateLimit';
 import type { TargetType } from '@prisma/client';
 
 /**
@@ -16,6 +17,7 @@ const bodySchema = z.string().trim().min(1).max(10_000);
 
 export async function createThread(input: { boardId: string; title: string; body: string; sharedStoreId?: string }) {
   const user = await requireUser();
+  enforce('community.thread', `u:${user.id}`);
   const title = z.string().trim().min(3).max(200).parse(input.title);
   const body = bodySchema.parse(input.body);
 
@@ -39,6 +41,7 @@ export async function createThread(input: { boardId: string; title: string; body
 
 export async function createComment(threadId: string, body: string) {
   const user = await requireUser();
+  enforce('community.comment', `u:${user.id}`);
   const text = bodySchema.parse(body);
 
   const thread = await db.forumThread.findUnique({
@@ -126,6 +129,10 @@ export async function fileReport(input: {
   notes?: string;
 }) {
   const user = await requireUser();
+  // Reports are throttled per reporter, not per target: ten reports on one
+  // comment already collapse to a single queue item with a count (§6), so the
+  // abuse case worth stopping is one account flooding the queue across targets.
+  enforce('community.report', `u:${user.id}`);
   await db.report.create({
     data: {
       reporterId: user.id,

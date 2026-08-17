@@ -23,7 +23,9 @@ export function StoreCard({
   signedIn: boolean;
 }) {
   return (
-    <div className="flex flex-col bg-white p-5">
+    // data-impression-id is what ImpressionTracker observes; without it the
+    // card is invisible to the impression count.
+    <div className="flex flex-col bg-white p-5" data-impression-id={store.id}>
       <div className="mb-3 flex items-start gap-3">
         <div className="grid h-[38px] w-[38px] shrink-0 place-items-center overflow-hidden border border-line bg-wash text-[13px] font-extrabold tracking-tight">
           {store.logoUrl ? (

@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import { ImpressionTracker } from '@/components/ImpressionTracker';
 
 export const metadata: Metadata = {
   title: 'the index — independent stores, one catalogue',
@@ -18,7 +19,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           rel="stylesheet"
         />
       </head>
-      <body>{children}</body>
+      <body>
+        {children}
+        {/* Renders nothing; watches for store cards and reports them as seen. */}
+        <ImpressionTracker />
+      </body>
     </html>
   );
 }

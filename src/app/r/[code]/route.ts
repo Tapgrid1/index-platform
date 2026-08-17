@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { safeExternalUrl } from '@/lib/url';
 
 /**
  * THE RESOLVER — physical scan entry point.
@@ -31,8 +32,11 @@ export async function GET(
       (placement.activeTo && placement.activeTo < now));
 
   // Unknown or expired codes get a branded fallback, never a 404. A dead end on
-  // a printed asset is permanent — the material cannot be recalled.
-  const target = !placement || expired ? `${fallback}/?scan=unrecognised` : placement.currentTargetUrl;
+  // a printed asset is permanent — the material cannot be recalled. An
+  // unparseable or non-http stored target is treated the same way: the printed
+  // code is still in the world regardless of what the route table now says.
+  const routed = !placement || expired ? null : safeExternalUrl(placement.currentTargetUrl);
+  const target = routed ?? `${fallback}/?scan=unrecognised`;
 
   const ua = req.headers.get('user-agent') ?? '';
   const deviceType = /iPhone|iPad|Android|Mobile/i.test(ua) ? 'mobile' : 'desktop';

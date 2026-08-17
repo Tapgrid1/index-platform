@@ -6,6 +6,7 @@ import Credentials from 'next-auth/providers/credentials';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { db } from '@/lib/db';
+import { appleClientSecret } from '@/lib/appleSecret';
 import type { Role } from '@prisma/client';
 
 const credentialsSchema = z.object({
@@ -20,7 +21,12 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   providers: [
     // Shopper path. Social only: no password to store, none to leak.
     Google,
-    Apple,
+    // Apple's client secret is a signed ES256 JWT that has to be minted, not
+    // configured. Minted at module load and cached, so a process that lives
+    // longer than the token's 150-day life must be redeployed — which is a far
+    // safer failure mode than the static string this replaced, since that one
+    // never worked at all.
+    Apple({ clientSecret: appleClientSecret() }),
     // Merchant and admin path, against a separate credential store.
     Credentials({
       credentials: { email: {}, password: {} },
@@ -49,10 +55,27 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         // without waiting for the session to expire.
         const fresh = await db.user.findUnique({
           where: { id: token.uid as string },
-          select: { role: true, status: true },
+          select: { role: true, status: true, sessionVersion: true },
         });
-        token.role = fresh?.role ?? 'SHOPPER';
-        token.status = fresh?.status ?? 'ACTIVE';
+
+        if (!fresh) {
+          // The account is gone. Defaulting to ACTIVE/SHOPPER here — which is
+          // what this did before — hands a deleted user a working session for
+          // as long as their token lives, and self-service deletion makes that
+          // reachable rather than theoretical.
+          token.role = 'SHOPPER';
+          token.status = 'DELETED';
+          return token;
+        }
+
+        // Freshly signed in: stamp the token with the version it was minted at.
+        if (user?.id) token.sv = fresh.sessionVersion;
+
+        // Rotating an older token: a bumped version means the credentials it
+        // was issued against are no longer valid. Marked rather than dropped so
+        // it fails through the same status gate every guard already checks.
+        token.status = token.sv === fresh.sessionVersion ? fresh.status : 'REVOKED';
+        token.role = fresh.role;
       }
       return token;
     },

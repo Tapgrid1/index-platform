@@ -95,6 +95,13 @@ model User {
   createdAt         DateTime      @default(now())
   lastSeenAt        DateTime      @default(now())
 
+  // Bumped whenever every existing session for this account must stop working
+  // — currently a password reset. Sessions are JWTs, so there is no server-side
+  // session row to delete; the token carries the version it was minted with and
+  // the jwt callback refuses it once this moves past that. Without this column a
+  // password reset does not actually lock anyone out.
+  sessionVersion Int @default(0)
+
   accounts       Account[]
   sessions       Session[]
   store          Store?
@@ -207,7 +214,10 @@ model Store {
 }
 
 // Five slots, enforced structurally: sortOrder is unique per store and
-// constrained to 0..4 by a CHECK added in migrations/constraints.sql.
+// constrained to 0..4 by a CHECK in prisma/sql/constraints.sql. Note that
+// @@map renames the TABLE only — columns stay camelCase, so hand-written SQL
+// against them must quote "sortOrder". Getting that wrong is not loud: the
+// ALTER fails and the guarantee is simply absent.
 model Product {
   id             String   @id @default(cuid())
   storeId        String
