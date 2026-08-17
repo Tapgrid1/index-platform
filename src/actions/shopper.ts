@@ -4,7 +4,8 @@ import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { db } from '@/lib/db';
 import { requireUser, currentUser } from '@/lib/authz';
-import { hit, subjectFor } from '@/lib/rateLimit';
+import { hit } from '@/lib/rateLimit';
+import { subjectFor } from '@/lib/rateLimitRequest';
 
 /** Quick-Save. The saved count is the platform's strongest first-party signal. */
 export async function toggleSave(storeId: string) {

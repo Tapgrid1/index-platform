@@ -11,6 +11,21 @@ const TABS = [
   ['/merchant/bridge', 'Physical Bridge'],
 ] as const;
 
+/**
+ * Chrome and guard for the signed-in portal.
+ *
+ * This lives in a (portal) route group rather than directly at app/merchant/
+ * for a load-bearing reason: a layout at app/merchant/ wraps EVERY /merchant/*
+ * route, and requireOwnStore() below throws for anyone without a store. That
+ * included /merchant/login, so the sign-in page rendered this layout, threw
+ * Forbidden, and returned a 500 — merchant sign-in could not work at all.
+ * Middleware allowing the page through is not enough when the layout above it
+ * refuses.
+ *
+ * login, forgot and reset therefore stay outside this group. Anything added
+ * here is guarded; anything a signed-out merchant must reach goes beside the
+ * group, not inside it.
+ */
 export default async function MerchantLayout({ children }: { children: React.ReactNode }) {
   const { user, store } = await requireOwnStore();
   const tier = (await db.user.findUnique({ where: { id: user.id }, select: { subscriptionTier: true } }))?.subscriptionTier ?? 'NONE';

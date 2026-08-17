@@ -8,7 +8,8 @@ vi.mock('next/headers', () => ({
   },
 }));
 
-import { hit, enforce, RateLimited, RULES, anonymousSubject, subjectFor } from './rateLimit';
+import { hit, enforce, RateLimited, RULES } from './rateLimit';
+import { anonymousSubject, subjectFor } from './rateLimitRequest';
 
 describe('rate limiter', () => {
   beforeEach(() => vi.useFakeTimers());

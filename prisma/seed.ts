@@ -142,7 +142,9 @@ async function main() {
         update: {},
         create: {
           storeId: store.id, sortOrder: i, title, imageUrl: IMG,
-          destinationUrl: `/product/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+          // Absolute, because this column is a redirect target, not a link
+          // within this app. A relative path here resolves to a nonsense host.
+          destinationUrl: `https://${s.url}/product/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
           clickCount: 40 + Math.floor(Math.random() * 380),
         },
       });

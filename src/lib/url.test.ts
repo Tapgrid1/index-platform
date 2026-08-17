@@ -34,6 +34,27 @@ describe('safeExternalUrl', () => {
     expect(safeExternalUrl('mailto:a@b.com')).toBeNull();
   });
 
+  it('rejects a relative path rather than inventing a host from it', () => {
+    // The bug this prevents: "/product/mug" becomes "https:///product/mug",
+    // which parses as host "product". Every product tile in the seeded
+    // catalogue redirected to https://product/<slug> because of this.
+    expect(safeExternalUrl('/product/marbled-stone-mug')).toBeNull();
+    expect(safeExternalUrl('product/marbled-stone-mug')).toBeNull();
+    expect(safeExternalUrl('/')).toBeNull();
+    expect(safeExternalUrl('checkout')).toBeNull();
+  });
+
+  it('rejects a host that could not resolve', () => {
+    expect(safeExternalUrl('acme.')).toBeNull();
+    expect(safeExternalUrl('.com')).toBeNull();
+  });
+
+  it('still allows localhost, for development and the resolver fallback', () => {
+    expect(safeExternalUrl('http://localhost:3000/?scan=unrecognised')).toBe(
+      'http://localhost:3000/?scan=unrecognised',
+    );
+  });
+
   it('rejects empty and unparseable input', () => {
     expect(safeExternalUrl('')).toBeNull();
     expect(safeExternalUrl('   ')).toBeNull();

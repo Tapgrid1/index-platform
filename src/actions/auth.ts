@@ -4,7 +4,8 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { db } from '@/lib/db';
-import { enforce, subjectFor } from '@/lib/rateLimit';
+import { enforce } from '@/lib/rateLimit';
+import { subjectFor } from '@/lib/rateLimitRequest';
 import { sendEmail, passwordResetEmail } from '@/lib/email';
 
 /**

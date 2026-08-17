@@ -7,6 +7,7 @@ import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { db } from '@/lib/db';
 import { appleClientSecret } from '@/lib/appleSecret';
+import { hit, clientKeyFromHeaders } from '@/lib/rateLimit';
 import type { Role } from '@prisma/client';
 
 const credentialsSchema = z.object({
@@ -30,11 +31,32 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     // Merchant and admin path, against a separate credential store.
     Credentials({
       credentials: { email: {}, password: {} },
-      async authorize(raw) {
+      async authorize(raw, request) {
         const parsed = credentialsSchema.safeParse(raw);
         if (!parsed.success) return null;
 
-        const user = await db.user.findUnique({ where: { email: parsed.data.email } });
+        const email = parsed.data.email.toLowerCase();
+
+        /**
+         * Brute-force ceilings, checked before the password is compared.
+         *
+         * This is the only unauthenticated endpoint in the product that accepts
+         * a guess and tells you whether it was right, and merchant accounts are
+         * the ones with a storefront URL attached — the single highest-value
+         * thing an attacker could repoint. Two ceilings because they catch
+         * different attacks: one grinding a known account, one spraying a
+         * common password across many.
+         *
+         * Every rejection below returns null identically. A limiter that says
+         * "too many attempts" for real accounts and "invalid" for absent ones
+         * is an account-existence oracle, which is most of what the attacker
+         * wanted anyway.
+         */
+        const origin = clientKeyFromHeaders(new Headers(request?.headers));
+        if (!hit('auth.signInOrigin', origin).ok) return null;
+        if (!hit('auth.signInAccount', `e:${email}`).ok) return null;
+
+        const user = await db.user.findUnique({ where: { email } });
         if (!user?.passwordHash) return null;
 
         // A banned or suspended account must not be able to obtain a session at all.

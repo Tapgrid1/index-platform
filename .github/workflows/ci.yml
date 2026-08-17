@@ -52,14 +52,11 @@ jobs:
       # the rate limiter. Fast, and the majority of the coverage.
       - run: npm test
 
-      - name: Apply schema and constraints
-        run: |
-          npx prisma db push --skip-generate
-          # `psql -v ON_ERROR_STOP=1` matters more than it looks: these
-          # statements silently no-op'd for months when one referenced a column
-          # name that did not exist. A failure here must fail the build.
-          PGPASSWORD=ci psql -h localhost -U ci -d index_test \
-            -v ON_ERROR_STOP=1 -f prisma/sql/constraints.sql
+      # Exactly what a deploy runs. `prisma db push` would also produce a
+      # working schema, but it would not exercise the migrations, and an
+      # unexercised migration is how a deploy discovers it does not apply.
+      - name: Apply migrations
+        run: npx prisma migrate deploy
 
       # Verifies the guarantees that only the database can make: the five-slot
       # cap, the story cap, vote weights, and the resolver's never-a-404 rule.

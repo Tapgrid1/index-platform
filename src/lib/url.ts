@@ -33,5 +33,23 @@ export function safeExternalUrl(raw: string | null | undefined): string | null {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
   if (!url.hostname) return null;
 
+  /**
+   * Reject anything whose "host" is not plausibly a host.
+   *
+   * Without this, the https upgrade above silently converts a relative path
+   * into a redirect to a made-up domain: "/product/mug" becomes
+   * "https:///product/mug", which the URL parser happily reads as host
+   * "product", path "/mug". That is not a hypothetical — the seed wrote
+   * destinationUrl as "/product/<slug>", and every product tile in the
+   * catalogue resolved to https://product/<slug>.
+   *
+   * A real public host has a dot in it. localhost is allowed so development
+   * and the resolver fallback keep working.
+   */
+  const host = url.hostname;
+  if (host !== 'localhost' && !host.includes('.')) return null;
+  // A trailing dot is legal DNS but never what a merchant meant to type.
+  if (host.startsWith('.') || host.endsWith('.')) return null;
+
   return url.toString();
 }

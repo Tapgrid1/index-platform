@@ -3,6 +3,7 @@ import { Header } from '@/components/Header';
 import { StoreCard } from '@/components/StoreCard';
 import { db } from '@/lib/db';
 import { requireUser } from '@/lib/authz';
+import { AccountDataPanel } from '@/components/AccountDataPanel';
 
 /** Everything here is first-party data the merchant cannot see in their own
  *  dashboard — which is exactly why it is worth holding. */
@@ -15,7 +16,7 @@ export default async function ArchivePage() {
     products: { orderBy: { sortOrder: 'asc' as const }, select: { id: true, title: true, imageUrl: true } },
   };
 
-  const [saved, history, searches] = await Promise.all([
+  const [saved, history, searches, ownedStore] = await Promise.all([
     db.savedStore.findMany({
       where: { userId: user.id },
       orderBy: { createdAt: 'desc' },
@@ -33,7 +34,11 @@ export default async function ArchivePage() {
       take: 12,
       select: { id: true, query: true, resultCount: true, searchedAt: true },
     }),
+    // Deletion warns differently for an owner: it takes the storefront too.
+    db.store.findUnique({ where: { ownerId: user.id }, select: { id: true } }),
   ]);
+
+  const ownsStore = !!ownedStore;
 
   return (
     <>
@@ -97,6 +102,10 @@ export default async function ArchivePage() {
             {!searches.length && <p className="py-5 font-mono text-xs text-ink-4">No queries logged yet.</p>}
           </section>
         </div>
+
+        {/* The archive is where a shopper sees what we hold about them, which
+            makes it the only honest place to offer export and deletion. */}
+        <AccountDataPanel ownsStore={ownsStore} />
       </main>
     </>
   );

@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { bufferImpressions } from '@/lib/impressions';
-import { hit, anonymousSubject } from '@/lib/rateLimit';
+import { hit } from '@/lib/rateLimit';
+import { anonymousSubject } from '@/lib/rateLimitRequest';
 
 /**
  * Impression ingest. Fed by navigator.sendBeacon from ImpressionTracker.

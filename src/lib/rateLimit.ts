@@ -1,8 +1,15 @@
-import { createHash, randomBytes } from 'node:crypto';
-import { headers } from 'next/headers';
-
 /**
  * Fixed-window rate limiting, in process.
+ *
+ * This module uses ONLY Web Crypto and plain JavaScript — no `node:crypto`, no
+ * `next/headers`, no Node built-ins of any kind. That is a hard constraint, not
+ * a preference: src/auth.ts imports this, and src/middleware.ts imports
+ * src/auth.ts, so everything reachable from here is bundled for the Edge
+ * runtime and evaluated on every page request. A `node:` import fails the build
+ * outright, and a Node-only call at module scope (the salt below used to be
+ * randomBytes) would throw on every request instead.
+ *
+ * Request-scoped subject helpers live in ./rateLimitRequest for the same reason.
  *
  * In-process is the right first move, not a shortcut: this is a single Next.js
  * deployment, and a Redis dependency bought before there is a second instance
@@ -45,6 +52,15 @@ export const RULES = {
   'search.log': { limit: 60, windowMs: MINUTE },
   'account.export': { limit: 5, windowMs: DAY },
   'auth.passwordReset': { limit: 5, windowMs: HOUR },
+
+  // Credential sign-in. Two separate ceilings on purpose:
+  //   byAccount — stops a slow grind against one known merchant's password
+  //   byOrigin  — stops one client spraying one common password across many
+  //               accounts, which the per-account limit never sees
+  // Tighter than everything else here because, unlike posting a comment, the
+  // legitimate case for retrying a password thirty times does not exist.
+  'auth.signInAccount': { limit: 8, windowMs: 15 * MINUTE },
+  'auth.signInOrigin': { limit: 25, windowMs: 15 * MINUTE },
 } as const satisfies Record<string, Rule>;
 
 export type RuleName = keyof typeof RULES;
@@ -96,34 +112,53 @@ export function enforce(rule: RuleName, subject: string) {
  * hashes only need to be stable for the length of a rate-limit window, and a
  * salt that never leaves memory cannot be exfiltrated from a backup.
  */
-const IP_SALT = randomBytes(32);
+const SALT = (() => {
+  const words = new Uint32Array(2);
+  crypto.getRandomValues(words);
+  return words;
+})();
 
 /**
- * Subject key for an unauthenticated caller.
+ * FNV-1a, twice with different seeds, for ~64 bits of key.
  *
- * This hashes the client IP and holds it ONLY in the in-memory bucket map. That
- * is not a contradiction of the rule that search_log carries no IP and no device
- * fingerprint (§6) — that rule is about what gets *persisted*, and this value is
- * never written to a table, never logged, and dies with the process. Throttling
- * anonymous traffic with no client identifier at all is not possible, and
- * leaving anonymous search unthrottled is the larger privacy risk, since an
- * unthrottled log is the one that fills with scraped queries.
+ * Deliberately not SHA-256. This value is an ephemeral in-memory bucket key: it
+ * is never persisted, never compared against anything an attacker supplies, and
+ * never a security boundary — so the property that matters is "does not hold raw
+ * IPs in memory", which a salted non-cryptographic hash satisfies. Choosing this
+ * over WebCrypto's digest also keeps the function synchronous, which keeps every
+ * call site free of an await it would otherwise need on the auth hot path.
  */
-export async function anonymousSubject() {
-  try {
-    const h = await headers();
-    const ip =
-      h.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-      h.get('x-real-ip')?.trim() ||
-      'unknown';
-    return createHash('sha256').update(IP_SALT).update(ip).digest('base64url').slice(0, 22);
-  } catch {
-    // Outside a request scope (seeding, scripts): one shared bucket is correct.
-    return 'no-request-scope';
+function fnv1a(input: string, seed: number) {
+  let h = seed >>> 0;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
   }
+  return h >>> 0;
 }
 
-/** Subject key for an action that may or may not have a signed-in caller. */
-export async function subjectFor(userId?: string | null) {
-  return userId ? `u:${userId}` : `a:${await anonymousSubject()}`;
+/**
+ * Bucket key for an unauthenticated caller, derived from the client IP.
+ *
+ * The hash is held ONLY in the in-memory bucket map. That is not a contradiction
+ * of the rule that search_log carries no IP and no device fingerprint (§6) —
+ * that rule is about what gets *persisted*, and this value is never written to a
+ * table, never logged, and dies with the process. Throttling anonymous traffic
+ * with no client identifier at all is not possible, and leaving anonymous search
+ * unthrottled is the larger privacy risk, since an unthrottled log is the one
+ * that fills with scraped queries.
+ */
+export function hashClientKey(value: string) {
+  const a = fnv1a(value, SALT[0]).toString(36);
+  const b = fnv1a(value, SALT[1]).toString(36);
+  return `${a}${b}`;
+}
+
+/** Reads the client IP off a raw Request, for callers outside a Next request scope. */
+export function clientKeyFromHeaders(headers: Headers) {
+  const ip =
+    headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+    headers.get('x-real-ip')?.trim() ||
+    'unknown';
+  return hashClientKey(ip);
 }

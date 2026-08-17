@@ -27,11 +27,16 @@ Three audiences, one codebase:
 ```bash
 cp .env.example .env          # fill in DATABASE_URL, AUTH_SECRET, ADMIN_PASSWORD
 npm install
-npx prisma migrate dev        # creates the schema
-psql "$DATABASE_URL" -f prisma/sql/constraints.sql   # CHECK constraints Prisma can't express
+npx prisma migrate deploy     # schema + CHECK constraints, in one step
 npm run db:seed               # 8 stores, forum content, 2 scan placements
 npm run dev
 ```
+
+The CHECK constraints Prisma cannot express are part of the initial migration
+rather than a file you run afterwards. They used to be a separate manual step,
+and one of them spent that entire period silently not applied — see
+`prisma/sql/constraints.sql`, which now explains itself and holds the one
+genuine post-deploy step (revoking UPDATE/DELETE on the audit log).
 
 Generate a secret with `openssl rand -base64 32`.
 

@@ -1,26 +1,29 @@
--- Structural constraints Prisma cannot express in schema.prisma.
--- Apply after `prisma migrate dev` (or paste into the generated migration).
-
--- Five product slots per store, enforced at the database.
--- Combined with @@unique([storeId, sortOrder]) this caps a store at 5 products
--- no matter which code path writes. An application-layer check alone drifts.
+-- The CHECK constraints that used to live here are now part of the initial
+-- migration (prisma/migrations/…_init/migration.sql), so `prisma migrate deploy`
+-- applies them and a fresh database cannot come up without them.
 --
--- The column identifier is quoted because schema.prisma maps TABLE names to
--- snake_case via @@map but leaves COLUMN names camelCase — there is no @map on
--- the field. Unquoted sort_order does not exist, and this statement silently
--- failed to apply for as long as it was written that way. src/lib/constraints.db.test.ts
--- exists so that cannot happen again unnoticed.
-ALTER TABLE products
-  ADD CONSTRAINT products_slot_range CHECK ("sortOrder" >= 0 AND "sortOrder" <= 4);
+-- They were moved because keeping them here did not work. This file was a
+-- manual post-migrate step, and products_slot_range spent the whole of that
+-- period silently NOT APPLIED — it referenced sort_order, while @@map renames
+-- tables and leaves column names camelCase. The ALTER errored, psql moved on to
+-- the next statement, and the five-slot cap that the README and schema.prisma
+-- both advertise as a database guarantee simply was not there.
+--
+-- Add new constraints as a new migration, never here.
+-- src/lib/constraints.db.test.ts asserts they are present, so a migration that
+-- drops one fails CI rather than failing quietly in production.
 
--- The 150-character story cap is already varchar(150), but reject whitespace-only.
-ALTER TABLE stores
-  ADD CONSTRAINT stores_story_not_blank CHECK (length(btrim(story)) > 0);
 
--- Votes are +1 / -1 only.
-ALTER TABLE forum_votes
-  ADD CONSTRAINT forum_votes_value CHECK (value IN (-1, 1));
-
--- Audit log is append-only: revoke UPDATE and DELETE from the application role.
--- Replace app_user with the role your DATABASE_URL connects as.
--- REVOKE UPDATE, DELETE ON admin_audit_log FROM app_user;
+-- ─────────────────────────────────────────────────────────────────────────
+-- Deployment step, NOT a migration.
+--
+-- The audit log is append-only. Prisma has no way to express this and a
+-- migration cannot know the role name your DATABASE_URL connects as, so run
+-- this by hand once per environment, substituting that role:
+--
+--   REVOKE UPDATE, DELETE ON admin_audit_log FROM app_user;
+--
+-- src/lib/audit.ts deliberately exposes no update or delete helper, but that is
+-- a convention. This is the enforcement. A rewritable record of admin actions
+-- is worthless in exactly the situation you would need it.
+-- ─────────────────────────────────────────────────────────────────────────
