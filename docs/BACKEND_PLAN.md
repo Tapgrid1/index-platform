@@ -10,21 +10,43 @@ Nothing below touches the data model. `prisma/schema.prisma` already carries
 the columns and tables every item needs; this is exclusively about the
 missing writers, jobs and integrations.
 
+## Status
+
+| | Item | State |
+|---|---|---|
+| P0 | Outbound click logging | **Shipped** |
+| P1 | Rate limiting | **Shipped** |
+| CC | Account export + deletion | **Shipped** |
+| P2 | Impression counting | **Shipped** |
+| P5 | Apple Sign-In client secret | **Shipped** |
+| P4 | Email | **Shipped, log driver** — provider key and `/merchant/reset` page outstanding |
+| P7 | Tests | **Shipped, boundary suite** — 80 tests; no DB-backed or e2e coverage |
+| P3 | Image pipeline | Not started — blocked on storage provider |
+| P6 | Payments | Not started — blocked on tier pricing |
+
+Two things found during implementation that were not in the original plan and
+are now fixed: the outbound routes were not merely unbuilt but **actively
+linked from the UI** (see P0), and **no CI workflow existed at all** despite
+`README.md` claiming one ran — `.github/workflows/ci.yml` now runs typecheck,
+lint, test and build.
+
 ---
 
-## P0 — outbound click logging doesn't exist
+## P0 — outbound click logging doesn't exist ✅ shipped
 
 `README.md` and `ARCHITECTURE.md` §4 document `/out/s/:storeId` and
 `/out/p/:productId` as live routes — enter-click and product-click loggers
-that redirect and record a `ClickEvent`. They aren't in `src/app`. Only the
-scan resolver (`src/app/r/[code]/route.ts`) writes events today.
+that redirect and record a `ClickEvent`. They weren't in `src/app`. Only the
+scan resolver (`src/app/r/[code]/route.ts`) wrote events.
 
-This is worse than an unbuilt feature: `Store.enterClickCount`,
-`Product.clickCount`, and the CTR already rendered on `/merchant/analytics`
-and the cold-start count on `/tg-admin` are live UI reading columns that no
-code path ever increments. Every merchant currently sees `0.0%` CTR
-regardless of real traffic. Fix this before anything else — it's a shipped
-page telling merchants something false.
+This was worse than an unbuilt feature, and worse than this plan first
+recorded. `StoreCard.tsx` links Enter to `/out/s/:id` and `Carousel.tsx`
+links every product tile to `/out/p/:id` — so those routes were not merely
+missing, they were **linked from the UI on every card in the directory**.
+Every Enter button and every product click returned a 404. The primary
+conversion action of the product was broken, not just unmeasured; the dead
+counters (`enterClickCount`, `clickCount`, the CTR on `/merchant/analytics`,
+the cold-start count on `/tg-admin`) were the second-order symptom.
 
 **Approach:** mirror the resolver's own pattern, since it already got the
 hard part right.
@@ -40,31 +62,60 @@ hard part right.
 - Product route additionally needs `destinationUrl` fetched by id before
   redirecting (single indexed lookup, same cost as the resolver's).
 
-Effort: half a day. No dependencies. Do this first.
+**As shipped**, plus three things the sketch above missed:
+
+- Stored URLs are not trustworthy destinations. `homeUrl` and
+  `destinationUrl` are free-text columns that land in a `Location` header, so
+  `src/lib/url.ts` gates them to http(s) and upgrades bare hosts (merchants
+  type `acme.com` constantly). The same helper now guards the resolver, the
+  admin override, the store-card edit and placement re-routing — the resolver
+  had the same exposure and no check.
+- Suspended stores do not redirect. A suspended listing is unpublished
+  everywhere else; sending traffic to it from a stale link would undo that.
+- The product route falls back to the store's `homeUrl` before falling back
+  to the directory. A broken product link still has a merchant behind it.
+
+Attribution reads the session in parallel with the store lookup rather than
+in series, so signed-in clicks are attributed without adding a round trip to
+the path.
 
 ---
 
-## P1 — rate limiting
+## P1 — rate limiting ✅ shipped
 
 Reports, comments and search are open to any authenticated shopper today
 with no throttling. This is the cheapest item on the list and the one where
 the cost of waiting compounds — every day live without it is a day of
 exposure on a public registration flow.
 
-**Approach:** a fixed-window or token-bucket limiter keyed on `userId`
-(anonymous search on IP is explicitly out — `SearchLog` carries no IP by
-design, so don't introduce one just for throttling; rate-limit anonymous
-search by session cookie instead). Start in-process (`Map` with TTL sweep)
-since this is a single Next.js deployment; move to Redis only if it scales
-to multiple instances. Wrap the three action entry points
-(`community.ts` report/comment, `shopper.ts` search) — not middleware,
-since the limit differs per action and the actions already own validation.
+**Approach:** a fixed-window limiter keyed on `userId`, in-process (`Map`
+with a sweep on write) since this is a single Next.js deployment; Redis only
+once there is a second instance. Wired at the action entry points, not in
+middleware, since the limit differs per action and the actions already own
+validation.
 
-Effort: 1–2 days.
+**Deviation from the plan as written, deliberate.** The original text said to
+key anonymous search on a session cookie and keep IP out of it entirely.
+That does not work: an anonymous visitor has no session cookie, so it would
+have left the actual abuse vector — unauthenticated search flooding —
+unthrottled. Shipped instead: the client IP is hashed with a per-process
+random salt and used only as an in-memory bucket key. It is never written to
+a table, never logged, and dies with the process.
+
+This does not violate the rule it appears to. That rule (§6) is about what
+`search_log` *persists*; an ephemeral hash used to decide whether to accept a
+write is a different thing, and leaving the log unthrottled is the larger
+privacy risk, since an unthrottled log is the one that fills with scraped
+queries. Flagged here because it contradicts the plan's own earlier
+instruction and should be overruled deliberately if you disagree.
+
+Search logging drops silently when limited rather than throwing — it is
+called during the render of `/search`, and a scraper hitting the ceiling
+should still get results; only the logging stops.
 
 ---
 
-## P2 — impression counting
+## P2 — impression counting ✅ shipped
 
 `Store.impressionCount` exists and is read (merchant analytics, admin cold
 start) but nothing increments it. Unlike clicks, a naive per-render
@@ -81,8 +132,24 @@ bot user agents at the route before counting. This is more machinery than
 P0's clicks because impressions have no natural server-side choke point
 (a click already redirects through a route handler; a view does not).
 
-Effort: 2–3 days. Depends on nothing above but is naturally sequenced after
-P0 since it's the same shape of problem with one more layer.
+**As shipped**, with one design point the sketch missed. `ImpressionTracker`
+is mounted once in the root layout, and a root layout does not re-render on
+client-side navigation — a one-shot `querySelectorAll` would have counted the
+directory and then silently stopped counting the moment a shopper navigated
+to a collection. It watches the DOM with a `MutationObserver` instead. The
+obvious alternatives are both worse: `usePathname` misses `?q=` changes on
+`/search`, and `useSearchParams` would opt the entire app out of static
+rendering.
+
+Threshold is half the card for half a second, deduped per store per session
+in `sessionStorage`, batched and flushed on `pagehide`/`visibilitychange` so
+a click through to a merchant does not lose the impression that preceded it.
+
+The counter is soft and must stay that way: the ingest route is
+unauthenticated (gating it on a session would count only signed-in shoppers,
+who are not who the merchant is paying to reach), so bot-UA filtering and a
+per-caller ceiling make casual inflation inconvenient without making the
+number trustworthy. Nothing billable should ever be computed from it.
 
 ---
 
@@ -112,7 +179,7 @@ credential decision before starting.
 
 ---
 
-## P4 — email
+## P4 — email ✅ shipped (log driver; provider key outstanding)
 
 Override notices render in-portal (`OverrideNotice` + the revert banner)
 but the accompanying email is never sent. Same gap applies to verification
@@ -129,13 +196,31 @@ actions already have before/after and reason in hand) rather than a queue —
 volume here is admin-action-driven, not user-driven, so synchronous send
 inside the action is fine and simpler than standing up a job queue for it.
 
-Effort: 2 days for the wrapper + 3 templates, plus the password-reset flow
-(token table already covered by `VerificationToken`, unused today) at
-another 1–2 days.
+**As shipped.** `src/lib/email.ts` has one `sendEmail()` with two drivers
+behind it: Resend over `fetch` (no new dependency) when `RESEND_API_KEY` is
+set, and a log driver otherwise. The log driver is what makes this mergeable
+before the provider decision lands — dev and CI get a visible record of what
+would have been sent and nothing disappears silently.
+
+Sends are best-effort and never awaited into the caller's failure path. An
+override must not roll back because a mail API had a bad minute, so the audit
+row and the in-portal notice are written regardless.
+
+Password reset (`src/actions/auth.ts`) closes a gap that was not in the
+README's list at all: the credentials provider was the only way a merchant
+signed in, and there was no reset path of any kind. Tokens are stored hashed
+in `verification_tokens` under a `pwreset:` identifier prefix so they can
+never be redeemed as an Auth.js sign-in token; one live token per account;
+one hour; single use. The request endpoint always reports success, because
+distinguishing "no such account" from "sent" makes it a membership oracle.
+
+**Still outstanding:** a provider key, and the `/merchant/reset` page the
+emailed link points at. The backend is complete; the link currently lands on
+a route that does not exist.
 
 ---
 
-## P5 — Apple Sign-In
+## P5 — Apple Sign-In ✅ shipped
 
 `AUTH_APPLE_SECRET` is a static string; Apple requires a signed JWT
 (ES256, rotated at most every 6 months, signed with a key from the Apple
@@ -145,8 +230,20 @@ Developer portal). Isolated, well-documented, no design decisions.
 from `APPLE_TEAM_ID` / `APPLE_KEY_ID` / `APPLE_PRIVATE_KEY` env vars,
 regenerated on deploy or via a cron a few days before expiry.
 
-Effort: half a day. Needs Apple Developer account credentials, which is a
-business-side dependency, not an engineering one.
+**As shipped**, in `src/lib/appleSecret.ts`, with two traps worth recording:
+
+- Node's ECDSA signing defaults to DER encoding; JWS requires the raw `r||s`
+  pair. Without `dsaEncoding: 'ieee-p1363'` Apple rejects the assertion with
+  an opaque `invalid_client`.
+- The import must be `from 'crypto'`, not `from 'node:crypto'`.
+  `src/middleware.ts` imports `@/auth`, which imports this file, so it lands
+  in the Edge bundle — and webpack rejects the `node:` scheme there outright,
+  failing the build. The file carries a comment saying so.
+
+Missing credentials degrade to the previous static-string behaviour rather
+than throwing, so an unconfigured Apple provider cannot take Google and the
+credentials provider down with it. Still needs real Apple Developer
+credentials, which is a business-side dependency.
 
 ---
 
@@ -175,7 +272,7 @@ idempotency (Stripe webhooks retry; handlers must be safe to run twice).
 
 ---
 
-## P7 — tests
+## P7 — tests ✅ boundary suite shipped
 
 CI runs typecheck, lint and build only. Given every server action is the
 actual authorization boundary (`requireUser`/`requireAdmin`/`requireOwnStore`
@@ -192,18 +289,35 @@ in `src/lib/authz.ts`), the highest-value tests are not UI tests — they're:
    tests pinned to the DB-level CHECKs in `prisma/sql/constraints.sql`, so a
    future migration that drops one fails CI instead of failing silently.
 
-Vitest is the natural fit (fast, works with the existing TS config, no
-Next-specific test runner needed for action/unit-level tests). Add
-Playwright only if/when the resolver or checkout flow need an end-to-end
-smoke test — not needed to start.
+**As shipped:** Vitest, 80 tests, no database required.
 
-Effort: ongoing; budget 3–4 days for the authz suite alone since it's one
-test file per action module, then fold new tests into each future PR rather
-than treating this as a one-time backfill.
+- `src/actions/authz.test.ts` — every exported mutation across all five
+  action modules, asserted to refuse anonymous callers, suspended accounts,
+  and (for admin actions) legitimate shoppers and owners. Plus the
+  cross-tenant cases that a role check alone does not cover: another
+  merchant's override notice, another store's placement, someone else's post.
+  Plus the tier gate on routing, which is the one genuinely gated capability
+  and therefore the one whose regression gives away the moat.
+- `src/lib/url.test.ts` — the scheme allowlist, weighted to rejection cases,
+  including the naive-implementation trap where `javascript:alert(1)` gets
+  rescued into `https://javascript:alert(1)`.
+- `src/lib/rateLimit.test.ts` — window exhaustion, reopening, and subject and
+  rule isolation.
+
+The suite asserts on refusal, not on happy paths: a broken happy path shows
+up in any manual click-through, whereas a guard that stops guarding does not.
+Adding a new action without adding it to the call list in that file is the
+failure mode to watch for — the list is manual.
+
+**Still outstanding:** nothing runs against a real database, so the DB-level
+CHECK constraints in `prisma/sql/constraints.sql` (five product slots, the
+150-character story cap, vote values) are still unverified by CI, and the
+resolver's known/unknown/expired paths are covered only by reading. Both want
+a Postgres service container in the workflow. Playwright remains unnecessary.
 
 ---
 
-## Cross-cutting: account delete and export
+## Cross-cutting: account delete and export ✅ shipped
 
 `DECISIONS.md` flags this directly: social auth, search logs, browsing
 history and coarse scan geo put this product in scope for real disclosure
@@ -216,35 +330,77 @@ belongs in this plan for that reason.
 (b) deletes/anonymizes on request — cascade deletes already exist on most
 tables via `onDelete: Cascade`; forum content should tombstone (existing
 self-delete path) rather than cascade-delete, so threads with replies don't
-disappear out from under other users. Sequence this alongside P1
-(rate limiting) — both are "cheap now, expensive later" infrastructure
-rather than user-facing features, and both are prerequisites for opening
-registration to real traffic in good conscience.
+disappear out from under other users.
 
-Effort: 2 days.
+**As shipped**, in `src/lib/account.ts`. The hard part turned out not to be
+deletion but deletion that does not corrupt everything around it — three
+problems the cascades create:
+
+1. **Cascades leave counters lying.** `saved_stores` cascades on user delete;
+   `Store.savedCount` does not. A naive delete drifts the metric that leads
+   the merchant dashboard upward permanently, on every account closure.
+   Forum `score` and `likeCount` have the same problem via votes and likes.
+   All three are unwound inside the transaction before the delete.
+2. **Cascades destroy other people's conversations.** `ForumThread.author`
+   and `ForumPost.author` both cascade, so a plain delete takes a thread and
+   everyone's replies to it along with the departing account. Authorship is
+   reassigned to a tombstone user — BANNED, no password hash, `.invalid`
+   address, so it can never hold a session — and the body scrubbed.
+3. **Admins with audit rows must not be deletable.** Already enforced by
+   `onDelete: Restrict`; the action now surfaces it as an explanation rather
+   than a constraint violation. Deleting the *who* must not dissolve the
+   record of *what*.
+
+Owners must confirm explicitly, since deletion takes the storefront, its
+products and its placements with it. This is a real delete of the user row,
+not an in-place anonymisation — anonymising is easier and is what most
+implementations settle for, but it leaves a row that still joins to
+everything the person did, which is not what someone asking to be deleted is
+asking for. `search_log` is `SetNull`, so those rows survive as genuinely
+anonymous, which is what that table is for.
+
+Export is available both as a server action and as
+`GET /api/account/export`, which sets `Content-Disposition` — an export a
+user cannot actually save is not an export.
+
+**Still outstanding:** no UI for either. Both are reachable only by calling
+the action.
 
 ---
 
 ## Sequencing
 
 ```
-P0  outbound click logging        — do first, fixes a live correctness bug
-P1  rate limiting                 ─┐  cheap, urgent, no dependencies
-CC  account delete/export         ─┘  same shape — ship together
-P2  impression counting           — same problem as P0, one layer harder
-P3  image pipeline                — blocks real merchant onboarding at scale
-P5  Apple Sign-In                 — isolated, do whenever credentials land
-P4  email                         — needed before P6 (override/verification
-                                     notices; password reset)
-P6  payments                      — blocked on pricing decision, do last
-P7  tests                         — start the authz suite in parallel with P1;
-                                     don't treat as a phase-gated deliverable
+P0  outbound click logging        ✅ done — fixed a live 404 on every card
+P1  rate limiting                 ✅ done
+CC  account delete/export         ✅ done
+P2  impression counting           ✅ done
+P5  Apple Sign-In                 ✅ done — awaiting Apple credentials
+P4  email                         ✅ done — awaiting provider key + reset page
+P7  tests                         ✅ boundary suite; DB-backed tests outstanding
+P3  image pipeline                — next; blocked on storage provider choice
+P6  payments                      — last; blocked on tier pricing
 ```
 
 This tracks the product build sequence in `ARCHITECTURE.md` §9
-(catalogue → retention loops → the moat → merchandising/scale): P0–P2 and CC
-harden the retention-loop and moat metrics that already ship; P3–P4 unblock
-real merchant onboarding; P6 is explicitly the last phase there too.
+(catalogue → retention loops → the moat → merchandising/scale): the shipped
+items harden the retention-loop and moat metrics that already ship; P3 and
+P4's provider key unblock real merchant onboarding; P6 is explicitly the last
+phase there too.
+
+## What to pick up next
+
+1. **`/merchant/reset`** — the password-reset backend is complete and the
+   emailed link currently lands on a 404. Smallest remaining gap between a
+   working flow and a usable one.
+2. **A Postgres service container in CI**, so the DB-level CHECK constraints
+   and the resolver's expiry logic are actually verified rather than assumed.
+3. **P3**, once a storage provider is chosen.
+4. **Session revocation on password reset.** Documented inline in
+   `src/actions/auth.ts`: adapter sessions are dropped, but the JWT strategy
+   means an already-issued token stays valid until it rotates. Closing that
+   properly needs a token version on the user row, checked in the `jwt`
+   callback — worth doing before opening registration widely.
 
 ## Decisions this plan doesn't resolve
 

@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { db } from '@/lib/db';
 import { requireUser, currentUser } from '@/lib/authz';
+import { hit, subjectFor } from '@/lib/rateLimit';
 
 /** Quick-Save. The saved count is the platform's strongest first-party signal. */
 export async function toggleSave(storeId: string) {
@@ -56,6 +57,13 @@ export async function logSearch(query: string, resultCount: number) {
   if (!parsed.success) return;
 
   const user = await currentUser();
+
+  // Silently drop rather than throw: this is called during the render of the
+  // search page, and a scraper hitting the ceiling should still see results —
+  // only the logging stops. Throwing here would break the page for the user.
+  const allowed = hit('search.log', await subjectFor(user?.id)).ok;
+  if (!allowed) return;
+
   await db.searchLog.create({
     data: { userId: user?.id ?? null, query: parsed.data, resultCount },
   });

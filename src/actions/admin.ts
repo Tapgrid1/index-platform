@@ -5,6 +5,8 @@ import { z } from 'zod';
 import { db } from '@/lib/db';
 import { requireAdmin } from '@/lib/authz';
 import { recordAudit } from '@/lib/audit';
+import { safeExternalUrl } from '@/lib/url';
+import { sendEmail, overrideNoticeEmail, verificationDecisionEmail } from '@/lib/email';
 
 /**
  * THE OVERRIDE SWITCH — the highest-risk action in the product.
@@ -25,11 +27,17 @@ export async function overrideStoreUrl(input: {
   const admin = await requireAdmin();
 
   const reason = z.string().trim().min(8, 'A real reason is required').max(500).parse(input.reason);
-  const newUrl = z.string().trim().min(4).max(200).parse(input.newUrl);
+  const raw = z.string().trim().min(4).max(200).parse(input.newUrl);
+
+  // The override writes the destination every shopper is sent to. A value that
+  // will not survive safeExternalUrl at click time is a silently dead Enter
+  // button, so it is rejected here rather than discovered by a merchant later.
+  const newUrl = safeExternalUrl(raw);
+  if (!newUrl) throw new Error('That is not a usable http(s) URL');
 
   const store = await db.store.findUnique({
     where: { id: input.storeId },
-    select: { id: true, homeUrl: true, name: true },
+    select: { id: true, homeUrl: true, name: true, owner: { select: { email: true } } },
   });
   if (!store) throw new Error('Store not found');
 
@@ -64,6 +72,23 @@ export async function overrideStoreUrl(input: {
     reason,
   });
 
+  // The in-portal banner is the guarantee; the email is the thing that reaches
+  // a merchant who is not logged in right now. Deliberately after the audit
+  // write and never awaited into the failure path — the override is already
+  // recorded, and a mail outage must not roll it back or surface as an error.
+  if (store.owner.email) {
+    void sendEmail(
+      overrideNoticeEmail({
+        to: store.owner.email,
+        storeName: store.name,
+        field: 'storefront URL',
+        before: store.homeUrl,
+        after: newUrl,
+        reason,
+      }),
+    );
+  }
+
   revalidatePath('/tg-admin/merchants');
   revalidatePath('/merchant');
 }
@@ -82,7 +107,12 @@ export async function setVerification(storeId: string, granted: boolean, note?: 
   const admin = await requireAdmin();
   const before = await db.store.findUnique({
     where: { id: storeId },
-    select: { isVerifiedMaker: true, verificationState: true },
+    select: {
+      isVerifiedMaker: true,
+      verificationState: true,
+      name: true,
+      owner: { select: { email: true } },
+    },
   });
 
   await db.store.update({
@@ -104,6 +134,19 @@ export async function setVerification(storeId: string, granted: boolean, note?: 
     after: { isVerifiedMaker: granted },
     reason: note,
   });
+
+  // Verification is a queue the merchant is waiting on; a decision they are
+  // never told about is indistinguishable from one that was never made.
+  if (before?.owner.email) {
+    void sendEmail(
+      verificationDecisionEmail({
+        to: before.owner.email,
+        storeName: before.name,
+        granted,
+        note,
+      }),
+    );
+  }
 
   revalidatePath('/');
   revalidatePath('/community');

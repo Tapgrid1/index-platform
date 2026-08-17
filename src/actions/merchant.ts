@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { db } from '@/lib/db';
 import { requireOwnStore, hasTier } from '@/lib/authz';
+import { safeExternalUrl } from '@/lib/url';
 
 /** The 150-character cap is enforced here AND at the database. A UI-only limit
  *  drifts the moment anything else writes to the column. */
@@ -19,9 +20,14 @@ export async function updateStoreCard(input: z.infer<typeof storeSchema>) {
   const { store } = await requireOwnStore();
   const data = storeSchema.parse(input);
 
+  // Validated at write time, not at click time: a merchant who saves a broken
+  // homeUrl otherwise finds out from a shopper who could not reach them.
+  const homeUrl = safeExternalUrl(data.homeUrl);
+  if (!homeUrl) throw new Error('Enter a valid http(s) storefront URL');
+
   await db.store.update({
     where: { id: store.id },
-    data: { ...data, monogram: data.monogram.toUpperCase() },
+    data: { ...data, homeUrl, monogram: data.monogram.toUpperCase() },
   });
 
   revalidatePath('/');
@@ -40,10 +46,13 @@ export async function upsertProduct(input: z.infer<typeof productSchema>) {
   const { store } = await requireOwnStore();
   const data = productSchema.parse(input);
 
+  const destinationUrl = safeExternalUrl(data.destinationUrl);
+  if (!destinationUrl) throw new Error('Enter a valid http(s) product URL');
+
   await db.product.upsert({
     where: { storeId_sortOrder: { storeId: store.id, sortOrder: data.sortOrder } },
-    create: { storeId: store.id, ...data },
-    update: { title: data.title, destinationUrl: data.destinationUrl, imageUrl: data.imageUrl },
+    create: { storeId: store.id, ...data, destinationUrl },
+    update: { title: data.title, destinationUrl, imageUrl: data.imageUrl },
   });
 
   revalidatePath('/');
@@ -79,11 +88,17 @@ export async function setPlacementRoute(placementId: string, targetUrl: string) 
   const placement = await db.adPlacement.findUnique({ where: { id: placementId } });
   if (!placement || placement.storeId !== store.id) throw new Error('Not your placement');
 
+  // The strictest of the three URL checks, because this one is printed. A
+  // placement re-pointed at an unusable target sends every future scan of a
+  // physical asset to the fallback, and the asset cannot be recalled.
+  const target = safeExternalUrl(targetUrl);
+  if (!target) throw new Error('Enter a valid http(s) destination for this placement');
+
   // History matters: without placement_routes you cannot explain a scan-count
   // change to a merchant who has re-pointed the destination three times.
   await db.$transaction([
-    db.adPlacement.update({ where: { id: placementId }, data: { currentTargetUrl: targetUrl } }),
-    db.placementRoute.create({ data: { placementId, targetUrl, setById: user.id } }),
+    db.adPlacement.update({ where: { id: placementId }, data: { currentTargetUrl: target } }),
+    db.placementRoute.create({ data: { placementId, targetUrl: target, setById: user.id } }),
   ]);
 
   revalidatePath('/merchant/bridge');

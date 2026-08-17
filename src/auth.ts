@@ -6,6 +6,7 @@ import Credentials from 'next-auth/providers/credentials';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { db } from '@/lib/db';
+import { appleClientSecret } from '@/lib/appleSecret';
 import type { Role } from '@prisma/client';
 
 const credentialsSchema = z.object({
@@ -20,7 +21,12 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   providers: [
     // Shopper path. Social only: no password to store, none to leak.
     Google,
-    Apple,
+    // Apple's client secret is a signed ES256 JWT that has to be minted, not
+    // configured. Minted at module load and cached, so a process that lives
+    // longer than the token's 150-day life must be redeployed — which is a far
+    // safer failure mode than the static string this replaced, since that one
+    // never worked at all.
+    Apple({ clientSecret: appleClientSecret() }),
     // Merchant and admin path, against a separate credential store.
     Credentials({
       credentials: { email: {}, password: {} },
