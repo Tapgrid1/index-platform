@@ -79,11 +79,14 @@ enum PlacementMedium {
 // Owners browse and save like anyone else; splitting the tables guarantees a
 // bug where an owner cannot bookmark a peer.
 model User {
-  id                String        @id @default(cuid())
-  email             String?       @unique
-  emailVerified     DateTime?
-  passwordHash      String? // owners/admins only; null for social accounts
-  name              String?
+  id            String    @id @default(cuid())
+  email         String?   @unique
+  emailVerified DateTime?
+  // No password column, deliberately. Authentication is OAuth only (see
+  // src/auth.ts): nothing to hash, nothing to reset, and nothing for a leaked
+  // dump to contain. ADMIN is derived from the ADMIN_EMAILS allowlist rather
+  // than stored as a grant.
+  name          String?
   image             String?
   role              Role          @default(SHOPPER)
   status            AccountStatus @default(ACTIVE)
@@ -95,11 +98,15 @@ model User {
   createdAt         DateTime      @default(now())
   lastSeenAt        DateTime      @default(now())
 
-  // Bumped whenever every existing session for this account must stop working
-  // — currently a password reset. Sessions are JWTs, so there is no server-side
-  // session row to delete; the token carries the version it was minted with and
-  // the jwt callback refuses it once this moves past that. Without this column a
-  // password reset does not actually lock anyone out.
+  // Bumped whenever every existing session for this account must stop working.
+  // Sessions are JWTs, so there is no server-side session row to delete; the
+  // token carries the version it was minted with and the jwt callback refuses
+  // it once this moves past that.
+  //
+  // Its use with OAuth is account-recovery: when someone regains a hijacked
+  // Google or Apple account, re-authenticating does NOT invalidate the
+  // attacker's existing session here, because that session no longer depends on
+  // the provider. Bumping this is the only thing that ends it.
   sessionVersion Int @default(0)
 
   accounts       Account[]

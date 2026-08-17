@@ -3,16 +3,53 @@ import { PrismaAdapter } from '@auth/prisma-adapter';
 import Google from 'next-auth/providers/google';
 import Apple from 'next-auth/providers/apple';
 import Credentials from 'next-auth/providers/credentials';
-import bcrypt from 'bcryptjs';
-import { z } from 'zod';
 import { db } from '@/lib/db';
 import { appleClientSecret } from '@/lib/appleSecret';
-import { hit, clientKeyFromHeaders } from '@/lib/rateLimit';
+import { isAdminEmail } from '@/lib/adminAllowlist';
 import type { Role } from '@prisma/client';
 
-const credentialsSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8),
+/**
+ * Authentication is OAuth only.
+ *
+ * There is no password anywhere in this product — no hash stored, no reset
+ * flow, no credential-stuffing surface, and nothing for a leaked database dump
+ * to contain. Shoppers, merchants and admins all sign in the same way; the only
+ * difference is the role that comes out the other side.
+ *
+ * Admin is not a database flag someone can set. It is derived from
+ * ADMIN_EMAILS on every token rotation (see the jwt callback), so the admin
+ * console follows the deploy configuration rather than the users table.
+ */
+
+/**
+ * DEVELOPMENT ONLY. Never reachable in production — see the guard below and
+ * the test in src/auth.test.ts that asserts it.
+ *
+ * Without this, a contributor cannot sign in at all without registering an
+ * OAuth client first, which makes `npm run dev` useless out of the box and
+ * makes the merchant portal untestable locally. It accepts any seeded email
+ * with no password check, which is exactly why it must never ship.
+ *
+ * Two independent gates, because one is a typo away from a public backdoor:
+ * NODE_ENV must not be production, AND DEV_AUTH must be explicitly enabled.
+ */
+const devAuthEnabled = process.env.NODE_ENV !== 'production' && process.env.DEV_AUTH === 'enabled';
+
+const devProvider = Credentials({
+  id: 'dev',
+  name: 'Development sign-in',
+  credentials: { email: {} },
+  async authorize(raw) {
+    if (!devAuthEnabled) return null;
+
+    const email = typeof raw?.email === 'string' ? raw.email.trim().toLowerCase() : '';
+    if (!email) return null;
+
+    const user = await db.user.findUnique({ where: { email } });
+    if (!user || user.status !== 'ACTIVE') return null;
+
+    return { id: user.id, email: user.email, name: user.name, image: user.image };
+  },
 });
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
@@ -20,71 +57,28 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   session: { strategy: 'jwt' },
   pages: { signIn: '/register' },
   providers: [
-    // Shopper path. Social only: no password to store, none to leak.
     Google,
     // Apple's client secret is a signed ES256 JWT that has to be minted, not
     // configured. Minted at module load and cached, so a process that lives
-    // longer than the token's 150-day life must be redeployed — which is a far
-    // safer failure mode than the static string this replaced, since that one
-    // never worked at all.
+    // longer than the token's 150-day life must be redeployed.
     Apple({ clientSecret: appleClientSecret() }),
-    // Merchant and admin path, against a separate credential store.
-    Credentials({
-      credentials: { email: {}, password: {} },
-      async authorize(raw, request) {
-        const parsed = credentialsSchema.safeParse(raw);
-        if (!parsed.success) return null;
-
-        const email = parsed.data.email.toLowerCase();
-
-        /**
-         * Brute-force ceilings, checked before the password is compared.
-         *
-         * This is the only unauthenticated endpoint in the product that accepts
-         * a guess and tells you whether it was right, and merchant accounts are
-         * the ones with a storefront URL attached — the single highest-value
-         * thing an attacker could repoint. Two ceilings because they catch
-         * different attacks: one grinding a known account, one spraying a
-         * common password across many.
-         *
-         * Every rejection below returns null identically. A limiter that says
-         * "too many attempts" for real accounts and "invalid" for absent ones
-         * is an account-existence oracle, which is most of what the attacker
-         * wanted anyway.
-         */
-        const origin = clientKeyFromHeaders(new Headers(request?.headers));
-        if (!hit('auth.signInOrigin', origin).ok) return null;
-        if (!hit('auth.signInAccount', `e:${email}`).ok) return null;
-
-        const user = await db.user.findUnique({ where: { email } });
-        if (!user?.passwordHash) return null;
-
-        // A banned or suspended account must not be able to obtain a session at all.
-        if (user.status !== 'ACTIVE') return null;
-
-        const ok = await bcrypt.compare(parsed.data.password, user.passwordHash);
-        if (!ok) return null;
-
-        return { id: user.id, email: user.email, name: user.name, image: user.image };
-      },
-    }),
+    ...(devAuthEnabled ? [devProvider] : []),
   ],
   callbacks: {
     async jwt({ token, user }) {
       if (user?.id) token.uid = user.id;
       if (token.uid) {
-        // Re-read on each rotation so a suspension or role change takes effect
-        // without waiting for the session to expire.
+        // Re-read on each rotation so a suspension, a role change, or an
+        // allowlist edit takes effect without waiting for the session to expire.
         const fresh = await db.user.findUnique({
           where: { id: token.uid as string },
-          select: { role: true, status: true, sessionVersion: true },
+          select: { role: true, status: true, email: true, sessionVersion: true },
         });
 
         if (!fresh) {
-          // The account is gone. Defaulting to ACTIVE/SHOPPER here — which is
-          // what this did before — hands a deleted user a working session for
-          // as long as their token lives, and self-service deletion makes that
-          // reachable rather than theoretical.
+          // The account is gone. Defaulting to ACTIVE/SHOPPER would hand a
+          // deleted user a working session for as long as their token lives,
+          // and self-service deletion makes that reachable.
           token.role = 'SHOPPER';
           token.status = 'DELETED';
           return token;
@@ -93,11 +87,30 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         // Freshly signed in: stamp the token with the version it was minted at.
         if (user?.id) token.sv = fresh.sessionVersion;
 
-        // Rotating an older token: a bumped version means the credentials it
-        // was issued against are no longer valid. Marked rather than dropped so
-        // it fails through the same status gate every guard already checks.
+        /**
+         * The allowlist is authoritative in BOTH directions. Being listed
+         * grants ADMIN even if the row says otherwise; not being listed strips
+         * it even if the row says ADMIN. That means a stolen database write
+         * cannot mint an admin, and removing someone from the deploy config
+         * actually removes them.
+         */
+        const allowlisted = isAdminEmail(fresh.email);
+        const effectiveRole: Role = allowlisted
+          ? 'ADMIN'
+          : fresh.role === 'ADMIN'
+            ? 'SHOPPER'
+            : fresh.role;
+
         token.status = token.sv === fresh.sessionVersion ? fresh.status : 'REVOKED';
-        token.role = fresh.role;
+        token.role = effectiveRole;
+
+        // Keep the row in step with the allowlist so admin listings and audit
+        // joins do not disagree with what the session actually permits.
+        if (fresh.role !== effectiveRole) {
+          await db.user
+            .update({ where: { id: token.uid as string }, data: { role: effectiveRole } })
+            .catch(() => {});
+        }
       }
       return token;
     },

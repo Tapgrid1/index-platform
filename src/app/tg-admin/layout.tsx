@@ -1,5 +1,6 @@
 import Link from 'next/link';
-import { requireAdmin } from '@/lib/authz';
+import { notFound } from 'next/navigation';
+import { requireAdmin, Forbidden } from '@/lib/authz';
 import { db } from '@/lib/db';
 
 const TABS = [
@@ -12,7 +13,25 @@ const TABS = [
 ] as const;
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
-  await requireAdmin();
+  /**
+   * 404, not 403 — the same answer middleware gives, and for the same reason:
+   * a prober must not be able to tell "this path exists but you may not have
+   * it" from "this path does not exist".
+   *
+   * This is not redundant with the middleware check. Middleware reads role
+   * from the session cookie's claims and cannot re-derive them (it runs on the
+   * Edge runtime, with no database), so a token minted before an ADMIN_EMAILS
+   * change still claims ADMIN until it rotates. This guard is the authoritative
+   * one, and without the catch it surfaced that window as a 500 — which is
+   * itself a disclosure.
+   */
+  try {
+    await requireAdmin();
+  } catch (err) {
+    if (err instanceof Forbidden) notFound();
+    throw err;
+  }
+
   const open = await db.report.count({ where: { status: 'OPEN' } });
 
   return (

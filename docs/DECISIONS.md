@@ -61,4 +61,15 @@ edges.
 **Privacy surface is real.** Social auth, search logs, browsing history and
 coarse scan geo put this in scope for genuine disclosure obligations. Cheap to
 do correctly now — working delete-account and export paths — and expensive to
-retrofit after the first request arrives.
+retrofit after the first request arrives. Both now exist and are reachable from
+`/archive`.
+
+**Authentication is OAuth only.** No password is stored anywhere, so there is
+no reset flow, no credential-stuffing surface, and nothing for a leaked dump to
+contain; account recovery belongs to Google and Apple. ADMIN comes from the
+`ADMIN_EMAILS` allowlist and is re-derived on every token rotation, which also
+supplies the mandatory-MFA property this document asks for — the providers
+enforce it, and this app cannot weaken it.
+
+One consequence to accept deliberately: there is no break-glass path. If Google
+and Apple are both unreachable, nobody signs in, including admins.

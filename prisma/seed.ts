@@ -6,7 +6,6 @@
  * Run: npm run db:seed
  */
 import { PrismaClient, type Tier } from '@prisma/client';
-import bcrypt from 'bcryptjs';
 
 const db = new PrismaClient();
 
@@ -69,18 +68,22 @@ const STORES: Seed[] = [
 async function main() {
   console.log('Seeding…');
 
-  const adminPassword = process.env.ADMIN_PASSWORD;
-  if (!adminPassword) throw new Error('Set ADMIN_PASSWORD in .env before seeding.');
+  /**
+   * The admin row is a placeholder for audit-log foreign keys, NOT a grant.
+   * Admin access comes from the ADMIN_EMAILS allowlist, re-derived on every
+   * token rotation — so seeding role: 'ADMIN' here confers nothing unless that
+   * same address is also in the allowlist, and removing it from the allowlist
+   * demotes this row on its owner's next request.
+   */
+  const adminEmail = (process.env.ADMIN_EMAILS ?? process.env.ADMIN_EMAIL ?? 'admin@example.com')
+    .split(',')[0]
+    .trim()
+    .toLowerCase();
 
   const admin = await db.user.upsert({
-    where: { email: process.env.ADMIN_EMAIL ?? 'admin@example.com' },
+    where: { email: adminEmail },
     update: {},
-    create: {
-      email: process.env.ADMIN_EMAIL ?? 'admin@example.com',
-      name: 'Platform Admin',
-      role: 'ADMIN',
-      passwordHash: await bcrypt.hash(adminPassword, 12),
-    },
+    create: { email: adminEmail, name: 'Platform Admin', role: 'ADMIN' },
   });
 
   const categories = new Map<string, string>();
@@ -116,7 +119,6 @@ async function main() {
         role: 'OWNER',
         subscriptionTier: s.tier,
         billingStatus: 'ACTIVE',
-        passwordHash: await bcrypt.hash('demo-password-change-me', 12),
       },
     });
 

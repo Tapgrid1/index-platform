@@ -19,8 +19,8 @@ missing writers, jobs and integrations.
 | CC | Account export + deletion | **Shipped** |
 | P2 | Impression counting | **Shipped** |
 | P5 | Apple Sign-In client secret | **Shipped** |
-| P4 | Email | **Shipped** — reset flow and pages complete; provider key outstanding |
-| P7 | Tests | **Shipped** — 80 database-free + 22 DB-backed; no browser e2e |
+| P4 | Email | **Shipped** — provider key outstanding. Password reset removed: auth is OAuth only |
+| P7 | Tests | **Shipped** — 95 database-free + 16 DB-backed; no browser e2e |
 | P3 | Image pipeline | Not started — blocked on storage provider |
 | P6 | Payments | Not started — blocked on tier pricing |
 
@@ -422,6 +422,53 @@ This tracks the product build sequence in `ARCHITECTURE.md` §9
 items harden the retention-loop and moat metrics that already ship; P3 and
 P4's provider key unblock real merchant onboarding; P6 is explicitly the last
 phase there too.
+
+## Authentication rewrite — OAuth only ✅ shipped
+
+Not in the original plan; requested after it. Google/Apple for shoppers plus
+email-and-password for merchants and admins became OAuth for everyone.
+
+Removed outright: the credentials provider, `bcryptjs`, `User.passwordHash`
+(dropped in a migration), the password-reset actions and their two pages, and
+the sign-in rate-limit rules. None of it has a replacement, because none is
+needed — with no stored credential there is nothing to guess, nothing to
+reset, and nothing for a leaked dump to contain. Account recovery is Google's
+and Apple's problem, and they are better at it.
+
+**ADMIN is now deploy configuration.** `ADMIN_EMAILS` is consulted on every
+token rotation, authoritative in both directions: listed grants the role,
+unlisted strips it, and the users row is corrected to match. A database write
+cannot mint an admin, and removing an address demotes that account on its next
+request rather than whenever someone remembers. An unset allowlist grants
+nobody — the alternative reading turns a missing variable into a full
+compromise.
+
+**Two bugs this uncovered, both pre-existing and both severe:**
+
+1. **Middleware could never see a session.** It runs on the Edge runtime; the
+   `jwt` callback queries Prisma; Prisma Client throws on Edge. Auth.js
+   swallows that as a `JWTSessionError` and returns null, so every signed-in
+   user looked signed out *to middleware only*. Owners bounced from
+   `/merchant` to `/merchant/login` forever, `/archive` never opened, and
+   `/tg-admin` 404'd actual admins. It had gone unnoticed because merchant
+   sign-in was separately returning 500. Fixed with `src/auth.edge.ts`, a
+   cookie-only instance with no adapter, no providers and no database.
+2. **The admin layout returned 500 instead of 404** whenever middleware's
+   claims were stale relative to the allowlist — a disclosure, since it
+   distinguishes "exists but forbidden" from "does not exist". It now catches
+   `Forbidden` and calls `notFound()`.
+
+**Local development.** With no password provider, a contributor could not sign
+in at all without first registering an OAuth client. `DEV_AUTH=enabled` adds a
+passwordless email-only provider, double-gated on `NODE_ENV !== 'production'`
+— and `next start` always sets production, so it is unreachable in a real
+build. Verified both ways against a running server, and `src/auth.test.ts`
+pins it.
+
+**Accepted trade-off:** no break-glass. If Google and Apple are both down,
+nobody signs in, admins included.
+
+---
 
 ## What to pick up next
 

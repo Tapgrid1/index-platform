@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import { auth } from '@/auth';
+// NOT '@/auth' — that instance queries Prisma, which cannot run on the Edge
+// runtime this file executes in. See src/auth.edge.ts for what that broke.
+import { edgeAuth } from '@/auth.edge';
 
 /**
  * Route protection and Content-Security-Policy.
@@ -18,7 +20,10 @@ import { auth } from '@/auth';
  * critical and serve no HTML for a CSP to protect.
  */
 
-const MERCHANT_PUBLIC = new Set(['/merchant/login', '/merchant/forgot', '/merchant/reset']);
+// Sign-in is the only /merchant page a signed-out visitor may reach. There is
+// no forgot/reset pair any more — authentication is OAuth only, so account
+// recovery belongs to Google and Apple rather than to this app.
+const MERCHANT_PUBLIC = new Set(['/merchant/login']);
 const GUARDED = ['/tg-admin', '/merchant', '/archive'];
 
 function makeNonce() {
@@ -75,12 +80,15 @@ export default async function middleware(req: NextRequest) {
 
   if (!GUARDED.some((prefix) => pathname.startsWith(prefix))) return pass();
 
-  const session = await auth();
+  const session = await edgeAuth();
   const role = session?.user?.role;
   const active = session?.user?.status === 'ACTIVE';
 
   if (pathname.startsWith('/tg-admin')) {
-    if (pathname === '/tg-admin/login') return pass();
+    // There is no /tg-admin/login: admins sign in through the same OAuth entry
+    // point as everyone else and are recognised by the ADMIN_EMAILS allowlist.
+    // A dedicated admin login page would be a page that confirms the console
+    // exists, which is exactly what the 404 below refuses to do.
     if (!session || !active || role !== 'ADMIN') {
       // 404 rather than 403: do not confirm the path exists to a prober.
       return send(NextResponse.rewrite(new URL('/404', req.url)));

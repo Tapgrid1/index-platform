@@ -1,0 +1,12 @@
+-- Authentication is OAuth only from here on.
+--
+-- Dropping this column is the point of the change, not a side effect: with no
+-- password stored there is nothing to hash, nothing to reset, no
+-- credential-stuffing surface, and nothing a leaked dump can reveal. Admin
+-- access moved to the ADMIN_EMAILS allowlist, which is deploy configuration
+-- rather than a row anything with database write access could grant itself.
+--
+-- This DOES destroy existing password hashes. That is intended and
+-- irreversible; every account signs in through Google or Apple afterwards, so
+-- the hashes have no remaining use.
+ALTER TABLE "users" DROP COLUMN "passwordHash";

@@ -51,16 +51,10 @@ export const RULES = {
   'community.report': { limit: 15, windowMs: HOUR },
   'search.log': { limit: 60, windowMs: MINUTE },
   'account.export': { limit: 5, windowMs: DAY },
-  'auth.passwordReset': { limit: 5, windowMs: HOUR },
-
-  // Credential sign-in. Two separate ceilings on purpose:
-  //   byAccount — stops a slow grind against one known merchant's password
-  //   byOrigin  — stops one client spraying one common password across many
-  //               accounts, which the per-account limit never sees
-  // Tighter than everything else here because, unlike posting a comment, the
-  // legitimate case for retrying a password thirty times does not exist.
-  'auth.signInAccount': { limit: 8, windowMs: 15 * MINUTE },
-  'auth.signInOrigin': { limit: 25, windowMs: 15 * MINUTE },
+  // No sign-in limits here any more. Authentication is OAuth only, so this app
+  // no longer exposes an endpoint that accepts a guess and reports whether it
+  // was right — the brute-force surface moved to Google and Apple, who are
+  // considerably better at defending it.
 } as const satisfies Record<string, Rule>;
 
 export type RuleName = keyof typeof RULES;
@@ -154,11 +148,3 @@ export function hashClientKey(value: string) {
   return `${a}${b}`;
 }
 
-/** Reads the client IP off a raw Request, for callers outside a Next request scope. */
-export function clientKeyFromHeaders(headers: Headers) {
-  const ip =
-    headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-    headers.get('x-real-ip')?.trim() ||
-    'unknown';
-  return hashClientKey(ip);
-}

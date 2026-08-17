@@ -35,19 +35,19 @@ PUBLIC
   /out/s/:storeId            enter-click logger → 302 to merchant
   /out/p/:productId          product deep-link logger → 302
   /r/:code                   RESOLVER — physical scan entry point
-  /register                  two-step: account, then intent
+  /register                  two-step: OAuth sign-in, then intent → role
 
 SHOPPER SESSION
   /archive                   saved stores · recent views · search log
 
-MERCHANT (email + password)
+MERCHANT (OAuth; /merchant/login is public, the rest is guarded)
   /merchant                  live preview
   /merchant/store            edit store card
   /merchant/products         5 slots — image, title, destination URL
   /merchant/analytics        saves-led metrics; search terms at T2
   /merchant/bridge           teaser below T3; routing command center at T3
 
-ADMIN (unlisted path, role-checked in middleware)
+ADMIN (unlisted path; role from the ADMIN_EMAILS allowlist)
   /tg-admin                  system health + cold-start watch
   /tg-admin/merchants        override switch, suspension
   /tg-admin/verification     manual badge grant queue

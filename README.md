@@ -18,19 +18,25 @@ Three audiences, one codebase:
 | Framework | Next.js 15 (App Router, Server Actions) |
 | Language | TypeScript, strict |
 | Database | PostgreSQL via Prisma 6 |
-| Auth | Auth.js v5 — Google/Apple for shoppers, credentials for merchants and admins |
+| Auth | Auth.js v5 — OAuth only (Google/Apple). No passwords anywhere |
 | Styling | Tailwind CSS |
 | Validation | Zod at every mutation boundary |
 
 ## Getting started
 
 ```bash
-cp .env.example .env          # fill in DATABASE_URL, AUTH_SECRET, ADMIN_PASSWORD
+cp .env.example .env          # fill in DATABASE_URL, AUTH_SECRET, ADMIN_EMAILS
 npm install
 npx prisma migrate deploy     # schema + CHECK constraints, in one step
 npm run db:seed               # 8 stores, forum content, 2 scan placements
 npm run dev
 ```
+
+Sign-in is Google or Apple. To work without registering an OAuth client, set
+`DEV_AUTH=enabled` in `.env` and use the passwordless dev sign-in that then
+appears on `/register` and `/merchant/login`. It cannot be turned on in
+production — `next start` sets `NODE_ENV=production`, which closes the gate
+regardless of the flag.
 
 The CHECK constraints Prisma cannot express are part of the initial migration
 rather than a file you run afterwards. They used to be a separate manual step,
@@ -121,20 +127,35 @@ exists), the `noindex` header, and — in deployment — a separate origin,
 mandatory MFA and an IP allowlist.
 
 **Five product slots are a database constraint.** `@@unique([storeId, sortOrder])`
-plus a `CHECK (sort_order BETWEEN 0 AND 4)`. An application-layer check alone
-drifts the moment another code path writes.
+plus a `CHECK ("sortOrder" BETWEEN 0 AND 4)`. An application-layer check alone
+drifts the moment another code path writes. Note the quoting: `@@map` renames
+tables and leaves columns camelCase, and the unquoted version of this
+constraint silently failed to apply for as long as it existed.
 
 **The 150-character story cap is enforced three times** — `varchar(150)`, Zod,
 and the form. Only the first one actually holds — and `npm run test:db` is what
 proves it still does. This argument is only true while someone checks; the
 five-slot CHECK made exactly the same claim and had silently never applied.
 
-**A password reset must actually sign the attacker out.** Sessions are JWTs,
-so there is no session row to delete. `User.sessionVersion` is stamped into the
-token at sign-in and re-checked on every rotation; resetting a password bumps
-it, and every older token fails the same status gate that suspensions use.
-Without it, "reset your password" reassures the victim and inconveniences
-nobody.
+**There are no passwords.** Sign-in is Google or Apple for everyone —
+shoppers, merchants, admins. Nothing to hash, nothing to reset, no
+credential-stuffing surface, and nothing a leaked dump could contain. Account
+recovery is the provider's problem, which is where it belongs.
+
+**Admin is deploy configuration, not a database row.** The ADMIN role is
+derived from the `ADMIN_EMAILS` allowlist on every token rotation, in both
+directions: being listed grants it, and not being listed strips it. A stolen
+database write cannot mint an admin, and removing someone from the config
+actually removes them rather than waiting for someone to remember the users
+table.
+
+**Middleware cannot read the database.** It runs on the Edge runtime, where
+Prisma Client throws — and Auth.js swallows that as a null session, so
+importing the full `auth` there reports every signed-in user as signed out.
+`src/auth.edge.ts` exists for this: it decrypts the cookie and reads the claims
+the Node-side callback stamped there, and nothing more. The page-level guards
+remain authoritative, which is why the admin layout re-checks and renders 404
+rather than trusting middleware.
 
 ---
 
@@ -144,8 +165,8 @@ Honest list, so nobody mistakes scaffolding for a finished product:
 
 - **Payments.** Tier and billing status are modelled; no processor is wired up. Tier prices are unset, which blocks the work rather than the reverse.
 - **Image pipeline.** Uploads are stored as data URIs so the app runs with no object storage. Production needs presigned upload, server-side re-encode, EXIF strip, and a minimum-dimension gate. Blocked on choosing a storage provider.
-- **Email delivery in production.** The sending seam, templates and call sites exist (`src/lib/email.ts`); with no `RESEND_API_KEY` set, messages are written to the server log instead of sent. Swapping in Postmark or SES means replacing one function.
-- **Browser-level end-to-end tests.** 80 database-free tests cover authorization on every server action, the URL allowlist and the rate limiter; 22 more run against real Postgres in CI. Nothing drives an actual browser.
+- **Email delivery in production.** The sending seam, templates and call sites exist (`src/lib/email.ts`); with no `RESEND_API_KEY` set, messages are written to the server log instead of sent. Swapping in Postmark or SES means replacing one function. Now used only for override and verification notices — with OAuth, there is no password-reset mail to send.
+- **Browser-level end-to-end tests.** 95 database-free tests cover authorization on every server action, the URL allowlist, the rate limiter, the admin allowlist and the dev-provider production gate; 16 more run against real Postgres in CI. Nothing drives an actual browser.
 
 Sequenced plan for the above, with approaches and dependencies:
 [`docs/BACKEND_PLAN.md`](docs/BACKEND_PLAN.md).
@@ -161,22 +182,24 @@ src/
   actions/             server actions — every mutation, Zod-validated
     account.ts         self-service data export and account deletion
     admin.ts           override, verification, suspension, moderation, boards
-    auth.ts            password reset request + redemption
     community.ts       threads, comments, votes, likes, board prefs, reports
     merchant.ts        store card, products, routing, override revert
+    register.ts        intent → role; the only path to OWNER
     shopper.ts         saves, view history, search logging
     authz.test.ts      authorization boundary suite — the guard on the guards
-    auth.db.test.ts    reset flow against real Postgres
   app/
     page.tsx           the directory — public front door
     r/[code]/          THE RESOLVER — physical scan entry point
     out/s|p/           outbound click loggers — the only writers of click counts
     api/impressions/   viewport-beacon ingest, buffered
     api/account/export account data download
-    merchant/          merchant portal (login · forgot · reset are public)
+    merchant/          (portal)/ is guarded; login sits outside it
     tg-admin/          admin console
+  auth.ts              full Auth.js config (Node; adapter + DB callbacks)
+  auth.edge.ts         cookie-only instance for middleware (no database)
   lib/
     account.ts         export + erasure, with counter unwinding
+    adminAllowlist.ts  ADMIN_EMAILS — the whole admin authorization model
     appleSecret.ts     mints Apple's ES256 client-secret JWT
     audit.ts           append-only audit writer
     authz.ts           guards: requireUser / requireAdmin / requireOwnStore / hasTier
@@ -195,7 +218,7 @@ pass with no services running. `npm run test:db` additionally needs a Postgres
 with the schema and `prisma/sql/constraints.sql` applied. CI runs all five on
 every push and pull request (`.github/workflows/ci.yml`).
 
-The suite is split on purpose. **`npm test`** (80 tests, no database) is
+The suite is split on purpose. **`npm test`** (95 tests, no database) is
 weighted toward authorization: server actions *are* the authorization boundary
 here — middleware only guards page routes, so an action missing its guard is
 reachable by anyone who can POST, whatever the UI shows.
@@ -203,10 +226,9 @@ reachable by anyone who can POST, whatever the UI shows.
 wrong actor, including cross-tenant cases (another merchant's override notice,
 another store's placement) and the tier gate on routing.
 
-**`npm run test:db`** (22 tests) covers what only a database can answer: that
-the CHECK constraints are actually present, that the resolver never 404s for
-any input, and that password reset stores its token hashed and single-use.
-That suite earned its keep on the first run — it found that
+**`npm run test:db`** (16 tests) covers what only a database can answer: that
+the CHECK constraints are actually present, and that the resolver never 404s
+for any input. That suite earned its keep on the first run — it found that
 `products_slot_range` had never applied, because the SQL referenced
 `sort_order` while the column is `"sortOrder"`. The five-slot cap the README
 described as a database guarantee was not being enforced by the database at
