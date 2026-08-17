@@ -9,6 +9,8 @@ import { auth } from '@/auth';
  * noindex header in next.config.mjs, and (in deployment) a separate origin,
  * mandatory MFA and an IP allowlist.
  */
+const MERCHANT_PUBLIC = new Set(['/merchant/login', '/merchant/forgot', '/merchant/reset']);
+
 export default async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
   const session = await auth();
@@ -25,7 +27,9 @@ export default async function middleware(req: NextRequest) {
   }
 
   if (pathname.startsWith('/merchant')) {
-    if (pathname === '/merchant/login') return NextResponse.next();
+    // Reaching these REQUIRES being signed out — a merchant who has forgotten
+    // their password by definition cannot get past the guard below to fix it.
+    if (MERCHANT_PUBLIC.has(pathname)) return NextResponse.next();
     if (!session || !active) {
       return NextResponse.redirect(new URL('/merchant/login', req.url));
     }

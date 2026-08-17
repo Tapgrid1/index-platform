@@ -12,5 +12,7 @@ declare module 'next-auth/jwt' {
     uid?: string;
     role?: Role;
     status?: string;
+    /** The User.sessionVersion this token was minted against. */
+    sv?: number;
   }
 }

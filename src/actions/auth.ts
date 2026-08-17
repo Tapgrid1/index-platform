@@ -104,14 +104,16 @@ export async function resetPassword(input: { token: string; password: string }) 
   await db.$transaction([
     db.user.update({
       where: { id: user.id },
-      data: { passwordHash: await bcrypt.hash(password, 12) },
+      data: {
+        passwordHash: await bcrypt.hash(password, 12),
+        // Invalidates every token minted before this moment. A reset that
+        // leaves the attacker's existing session working has not achieved the
+        // one thing the person resetting their password wanted.
+        sessionVersion: { increment: 1 },
+      },
     }),
     // Single use.
     db.verificationToken.deleteMany({ where: { identifier: row.identifier } }),
-    // Adapter sessions for this account are dropped. Note this does NOT revoke
-    // an already-issued JWT: session strategy is 'jwt', so an attacker holding
-    // a live token keeps it until it rotates. Closing that gap properly needs a
-    // token version on the user row, checked in the jwt callback.
     db.session.deleteMany({ where: { userId: user.id } }),
   ]);
 

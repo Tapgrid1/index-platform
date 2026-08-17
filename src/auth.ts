@@ -55,10 +55,27 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         // without waiting for the session to expire.
         const fresh = await db.user.findUnique({
           where: { id: token.uid as string },
-          select: { role: true, status: true },
+          select: { role: true, status: true, sessionVersion: true },
         });
-        token.role = fresh?.role ?? 'SHOPPER';
-        token.status = fresh?.status ?? 'ACTIVE';
+
+        if (!fresh) {
+          // The account is gone. Defaulting to ACTIVE/SHOPPER here — which is
+          // what this did before — hands a deleted user a working session for
+          // as long as their token lives, and self-service deletion makes that
+          // reachable rather than theoretical.
+          token.role = 'SHOPPER';
+          token.status = 'DELETED';
+          return token;
+        }
+
+        // Freshly signed in: stamp the token with the version it was minted at.
+        if (user?.id) token.sv = fresh.sessionVersion;
+
+        // Rotating an older token: a bumped version means the credentials it
+        // was issued against are no longer valid. Marked rather than dropped so
+        // it fails through the same status gate every guard already checks.
+        token.status = token.sv === fresh.sessionVersion ? fresh.status : 'REVOKED';
+        token.role = fresh.role;
       }
       return token;
     },

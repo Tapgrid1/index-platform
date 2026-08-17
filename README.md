@@ -120,7 +120,16 @@ plus a `CHECK (sort_order BETWEEN 0 AND 4)`. An application-layer check alone
 drifts the moment another code path writes.
 
 **The 150-character story cap is enforced three times** — `varchar(150)`, Zod,
-and the form. Only the first one actually holds.
+and the form. Only the first one actually holds — and `npm run test:db` is what
+proves it still does. This argument is only true while someone checks; the
+five-slot CHECK made exactly the same claim and had silently never applied.
+
+**A password reset must actually sign the attacker out.** Sessions are JWTs,
+so there is no session row to delete. `User.sessionVersion` is stamped into the
+token at sign-in and re-checked on every rotation; resetting a password bumps
+it, and every older token fails the same status gate that suspensions use.
+Without it, "reset your password" reassures the victim and inconveniences
+nobody.
 
 ---
 
@@ -131,8 +140,7 @@ Honest list, so nobody mistakes scaffolding for a finished product:
 - **Payments.** Tier and billing status are modelled; no processor is wired up. Tier prices are unset, which blocks the work rather than the reverse.
 - **Image pipeline.** Uploads are stored as data URIs so the app runs with no object storage. Production needs presigned upload, server-side re-encode, EXIF strip, and a minimum-dimension gate. Blocked on choosing a storage provider.
 - **Email delivery in production.** The sending seam, templates and call sites exist (`src/lib/email.ts`); with no `RESEND_API_KEY` set, messages are written to the server log instead of sent. Swapping in Postmark or SES means replacing one function.
-- **Password-reset UI.** The backend flow is complete (`src/actions/auth.ts`); `/merchant/reset` is not built yet, so the emailed link has no page to land on.
-- **Tests beyond the boundary suite.** 80 tests cover authorization on every server action, the URL allowlist and the rate limiter. There is no end-to-end suite and no test that runs against a real database.
+- **Browser-level end-to-end tests.** 80 database-free tests cover authorization on every server action, the URL allowlist and the rate limiter; 22 more run against real Postgres in CI. Nothing drives an actual browser.
 
 Sequenced plan for the above, with approaches and dependencies:
 [`docs/BACKEND_PLAN.md`](docs/BACKEND_PLAN.md).
@@ -153,13 +161,14 @@ src/
     merchant.ts        store card, products, routing, override revert
     shopper.ts         saves, view history, search logging
     authz.test.ts      authorization boundary suite — the guard on the guards
+    auth.db.test.ts    reset flow against real Postgres
   app/
     page.tsx           the directory — public front door
     r/[code]/          THE RESOLVER — physical scan entry point
     out/s|p/           outbound click loggers — the only writers of click counts
     api/impressions/   viewport-beacon ingest, buffered
     api/account/export account data download
-    merchant/          merchant portal
+    merchant/          merchant portal (login · forgot · reset are public)
     tg-admin/          admin console
   lib/
     account.ts         export + erasure, with counter unwinding
@@ -177,12 +186,23 @@ src/
 ## Verification
 
 `npm run typecheck && npm run lint && npm test && npm run build` — all four
-pass. CI runs them on every push and pull request
-(`.github/workflows/ci.yml`).
+pass with no services running. `npm run test:db` additionally needs a Postgres
+with the schema and `prisma/sql/constraints.sql` applied. CI runs all five on
+every push and pull request (`.github/workflows/ci.yml`).
 
-The test suite is deliberately weighted toward authorization. Server actions
-*are* the authorization boundary here — middleware only guards page routes, so
-an action missing its guard is reachable by anyone who can POST, whatever the
-UI shows. `src/actions/authz.test.ts` asserts that every exported mutation
-refuses the wrong actor, including the cross-tenant cases (another merchant's
-override notice, another store's placement) and the tier gate on routing.
+The suite is split on purpose. **`npm test`** (80 tests, no database) is
+weighted toward authorization: server actions *are* the authorization boundary
+here — middleware only guards page routes, so an action missing its guard is
+reachable by anyone who can POST, whatever the UI shows.
+`src/actions/authz.test.ts` asserts that every exported mutation refuses the
+wrong actor, including cross-tenant cases (another merchant's override notice,
+another store's placement) and the tier gate on routing.
+
+**`npm run test:db`** (22 tests) covers what only a database can answer: that
+the CHECK constraints are actually present, that the resolver never 404s for
+any input, and that password reset stores its token hashed and single-use.
+That suite earned its keep on the first run — it found that
+`products_slot_range` had never applied, because the SQL referenced
+`sort_order` while the column is `"sortOrder"`. The five-slot cap the README
+described as a database guarantee was not being enforced by the database at
+all.

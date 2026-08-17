@@ -15,11 +15,23 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: index_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     env:
-      # Build-time only. `prisma generate` reads the URL's shape but never
-      # connects, and every page in the app is server-rendered on demand, so no
-      # database is reachable — or needed — during a build.
-      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci?schema=public
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/index_test?schema=public
       AUTH_SECRET: ci-placeholder-secret-not-used-at-runtime
 
     steps:
@@ -36,6 +48,21 @@ jobs:
 
       - run: npm run lint
 
+      # The database-free suite: authorization boundaries, the URL allowlist,
+      # the rate limiter. Fast, and the majority of the coverage.
       - run: npm test
+
+      - name: Apply schema and constraints
+        run: |
+          npx prisma db push --skip-generate
+          # `psql -v ON_ERROR_STOP=1` matters more than it looks: these
+          # statements silently no-op'd for months when one referenced a column
+          # name that did not exist. A failure here must fail the build.
+          PGPASSWORD=ci psql -h localhost -U ci -d index_test \
+            -v ON_ERROR_STOP=1 -f prisma/sql/constraints.sql
+
+      # Verifies the guarantees that only the database can make: the five-slot
+      # cap, the story cap, vote weights, and the resolver's never-a-404 rule.
+      - run: npm run test:db
 
       - run: npm run build

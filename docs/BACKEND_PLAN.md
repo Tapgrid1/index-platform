@@ -19,16 +19,26 @@ missing writers, jobs and integrations.
 | CC | Account export + deletion | **Shipped** |
 | P2 | Impression counting | **Shipped** |
 | P5 | Apple Sign-In client secret | **Shipped** |
-| P4 | Email | **Shipped, log driver** — provider key and `/merchant/reset` page outstanding |
-| P7 | Tests | **Shipped, boundary suite** — 80 tests; no DB-backed or e2e coverage |
+| P4 | Email | **Shipped** — reset flow and pages complete; provider key outstanding |
+| P7 | Tests | **Shipped** — 80 database-free + 22 DB-backed; no browser e2e |
 | P3 | Image pipeline | Not started — blocked on storage provider |
 | P6 | Payments | Not started — blocked on tier pricing |
 
-Two things found during implementation that were not in the original plan and
-are now fixed: the outbound routes were not merely unbuilt but **actively
-linked from the UI** (see P0), and **no CI workflow existed at all** despite
-`README.md` claiming one ran — `.github/workflows/ci.yml` now runs typecheck,
-lint, test and build.
+Four things found during implementation that were not in the original plan,
+all now fixed. Each was a claim the repo made about itself that was not true:
+
+1. The outbound routes were not merely unbuilt but **actively linked from
+   every card in the UI** (see P0).
+2. **No CI workflow existed at all**, despite `README.md` claiming one ran.
+3. **`products_slot_range` had never applied.** `constraints.sql` referenced
+   `sort_order`, but `@@map` renames tables and leaves columns camelCase, so
+   the `ALTER TABLE` errored and was skipped. The five-slot cap that
+   `README.md` and `schema.prisma` both describe as a database guarantee was
+   enforced only by application code — the exact drift the comments warn
+   about. Found by the first run of the DB-backed suite.
+4. **A deleted account kept a working session.** The `jwt` callback defaulted a
+   missing user row to `ACTIVE`/`SHOPPER`, which self-service deletion turned
+   from theoretical into reachable.
 
 ---
 
@@ -214,9 +224,18 @@ never be redeemed as an Auth.js sign-in token; one live token per account;
 one hour; single use. The request endpoint always reports success, because
 distinguishing "no such account" from "sent" makes it a membership oracle.
 
-**Still outstanding:** a provider key, and the `/merchant/reset` page the
-emailed link points at. The backend is complete; the link currently lands on
-a route that does not exist.
+`/merchant/forgot` and `/merchant/reset` are now built, plus a "Forgot your
+password?" link on the sign-in page. Both had to be added to a public
+allowlist in `src/middleware.ts` — the `/merchant` guard would otherwise have
+redirected them to sign-in, which a merchant who has forgotten their password
+by definition cannot do.
+
+Resetting now bumps `User.sessionVersion`, which invalidates every token
+minted earlier. Previously the reset deleted adapter session rows only, so
+with the JWT strategy an attacker's live session survived the reset — the
+reset reassured the victim and inconvenienced nobody.
+
+**Still outstanding:** a provider key. Nothing else.
 
 ---
 
@@ -309,11 +328,27 @@ up in any manual click-through, whereas a guard that stops guarding does not.
 Adding a new action without adding it to the call list in that file is the
 failure mode to watch for — the list is manual.
 
-**Still outstanding:** nothing runs against a real database, so the DB-level
-CHECK constraints in `prisma/sql/constraints.sql` (five product slots, the
-150-character story cap, vote values) are still unverified by CI, and the
-resolver's known/unknown/expired paths are covered only by reading. Both want
-a Postgres service container in the workflow. Playwright remains unnecessary.
+**Also shipped: the DB-backed suite** (`npm run test:db`, 22 tests, a Postgres
+service container in CI). Kept in a separate config so `npm test` needs no
+services and stays a one-second loop.
+
+- `src/lib/constraints.db.test.ts` — the CHECK constraints, written through
+  Prisma with the application checks bypassed, since the whole question is
+  what happens when something other than the happy path writes.
+- `src/app/r/[code]/resolver.db.test.ts` — live, unknown, not-yet-active,
+  expired, and a stored `javascript:` target. The property under test is
+  "never a 404, for any input", which is precisely what a well-meaning
+  refactor breaks.
+- `src/actions/auth.db.test.ts` — reset tokens stored hashed, single-use,
+  expiring, and `sessionVersion` actually moving.
+
+This suite paid for itself on its first run by finding that
+`products_slot_range` had never been applied. The CI step uses
+`psql -v ON_ERROR_STOP=1` for that reason: the original failure was silent.
+
+**Still outstanding:** nothing drives a browser. Playwright remains
+unnecessary — there is no flow whose failure mode is visual rather than
+behavioural.
 
 ---
 
@@ -376,8 +411,8 @@ P1  rate limiting                 ✅ done
 CC  account delete/export         ✅ done
 P2  impression counting           ✅ done
 P5  Apple Sign-In                 ✅ done — awaiting Apple credentials
-P4  email                         ✅ done — awaiting provider key + reset page
-P7  tests                         ✅ boundary suite; DB-backed tests outstanding
+P4  email                         ✅ done — awaiting provider key
+P7  tests                         ✅ done — 80 db-free + 22 DB-backed in CI
 P3  image pipeline                — next; blocked on storage provider choice
 P6  payments                      — last; blocked on tier pricing
 ```
@@ -390,17 +425,27 @@ phase there too.
 
 ## What to pick up next
 
-1. **`/merchant/reset`** — the password-reset backend is complete and the
-   emailed link currently lands on a 404. Smallest remaining gap between a
-   working flow and a usable one.
-2. **A Postgres service container in CI**, so the DB-level CHECK constraints
-   and the resolver's expiry logic are actually verified rather than assumed.
-3. **P3**, once a storage provider is chosen.
-4. **Session revocation on password reset.** Documented inline in
-   `src/actions/auth.ts`: adapter sessions are dropped, but the JWT strategy
-   means an already-issued token stays valid until it rotates. Closing that
-   properly needs a token version on the user row, checked in the `jwt`
-   callback — worth doing before opening registration widely.
+Everything that could be built without a decision from you has been. What
+remains is either blocked or genuinely optional:
+
+1. **P3, the image pipeline** — needs a storage provider named (S3, R2, or
+   other). This is the last item blocking real merchant onboarding at volume,
+   since data-URI images bloat every row and page that touches them and
+   nothing currently strips EXIF from merchant photo uploads.
+2. **An email provider key**, or a decision to use something other than
+   Resend. One function changes either way.
+3. **P6, payments** — needs tier prices. Nothing engineering-side can start.
+4. **UI for account export and deletion.** Both work; neither is reachable
+   from a page.
+5. **A migration for `sessionVersion`.** This repo commits no
+   `prisma/migrations`, so the column arrives via `prisma db push` /
+   `migrate dev`. Worth generating a real migration before any deploy that
+   cannot afford a schema drift.
+
+Two smaller things worth knowing about rather than doing now: the impression
+buffer and the rate limiter are both per-instance, so both degrade (not fail)
+if this is ever deployed to more than one instance — the fix for each is a
+shared store, and neither is worth it before that day.
 
 ## Decisions this plan doesn't resolve
 

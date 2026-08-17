@@ -4,8 +4,14 @@
 -- Five product slots per store, enforced at the database.
 -- Combined with @@unique([storeId, sortOrder]) this caps a store at 5 products
 -- no matter which code path writes. An application-layer check alone drifts.
+--
+-- The column identifier is quoted because schema.prisma maps TABLE names to
+-- snake_case via @@map but leaves COLUMN names camelCase — there is no @map on
+-- the field. Unquoted sort_order does not exist, and this statement silently
+-- failed to apply for as long as it was written that way. src/lib/constraints.db.test.ts
+-- exists so that cannot happen again unnoticed.
 ALTER TABLE products
-  ADD CONSTRAINT products_slot_range CHECK (sort_order >= 0 AND sort_order <= 4);
+  ADD CONSTRAINT products_slot_range CHECK ("sortOrder" >= 0 AND "sortOrder" <= 4);
 
 -- The 150-character story cap is already varchar(150), but reject whitespace-only.
 ALTER TABLE stores
