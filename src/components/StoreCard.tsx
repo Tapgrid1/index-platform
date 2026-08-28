@@ -22,32 +22,58 @@ export function StoreCard({
   saved: boolean;
   signedIn: boolean;
 }) {
+  // data-impression-id remains load-bearing — ImpressionTracker observes it via
+  // a single root container.
   return (
-    // data-impression-id is what ImpressionTracker observes; without it the
-    // card is invisible to the impression count.
-    <div className="flex flex-col bg-white p-5" data-impression-id={store.id}>
-      <div className="mb-3 flex items-start gap-3">
-        <div className="grid h-[38px] w-[38px] shrink-0 place-items-center overflow-hidden border border-line bg-wash text-[13px] font-extrabold tracking-tight">
-          {store.logoUrl ? (
-            /* eslint-disable-next-line @next/next/no-img-element */
-            <img src={store.logoUrl} alt="" className="h-full w-full object-cover" />
-          ) : (
-            store.monogram
-          )}
-        </div>
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-1.5 text-[15px] font-semibold tracking-[-0.015em]">
-            {store.name}
-            {store.isVerifiedMaker && <VerifiedBadge />}
-          </div>
-          <div className="mt-[3px] font-mono text-[10px] uppercase tracking-[0.1em] text-ink-4">
-            {store.category?.name ?? 'Independent'}
-          </div>
-        </div>
+    <div className="relative flex flex-col bg-white p-5" data-impression-id={store.id}>
+      <div className="absolute right-4 top-4">
         <SaveButton storeId={store.id} saved={saved} signedIn={signedIn} />
       </div>
 
-      <p className="mb-4 min-h-[60px] text-[13.5px] leading-relaxed text-ink-2">{store.story}</p>
+      <div className="flex w-full flex-col items-center pt-1">
+        {store.logoUrl ? (
+          <div
+            className={[
+              'grid shrink-0 place-items-center border border-line bg-wash overflow-hidden',
+              'h-14 w-14 md:h-16 md:w-16',
+            ].join(' ')}
+          >
+            {/* object-contain so logos with internal padding keep their
+                proportions instead of being cropped to a square. */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={store.logoUrl}
+              alt=""
+              className="h-full w-full object-contain"
+            />
+          </div>
+        ) : (
+          <div
+            aria-label="No logo uploaded"
+            className={[
+              'grid shrink-0 place-items-center border border-dashed border-line bg-wash',
+              'h-14 w-14 md:h-16 md:w-16',
+            ].join(' ')}
+          >
+            <span className="text-[10px] uppercase tracking-[0.1em] text-ink-4">
+              no logo
+            </span>
+          </div>
+        )}
+
+        <div className="mt-3 flex max-w-full flex-wrap items-center justify-center gap-1.5 text-[15px] font-semibold tracking-[-0.015em]">
+          <span className="truncate">{store.name}</span>
+          {store.isVerifiedMaker && <VerifiedBadge />}
+        </div>
+
+        <div className="mt-[3px] font-mono text-[10px] uppercase tracking-[0.1em] text-ink-4">
+          {store.category?.name ?? 'Independent'}
+        </div>
+      </div>
+
+      <p className="mb-4 mt-5 min-h-[60px] text-center text-[13.5px] leading-relaxed text-ink-2">
+        {store.story}
+      </p>
 
       <Carousel items={store.products} />
 
