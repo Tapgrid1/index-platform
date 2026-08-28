@@ -18,7 +18,7 @@ Three audiences, one codebase:
 | Framework | Next.js 15 (App Router, Server Actions) |
 | Language | TypeScript, strict |
 | Database | PostgreSQL via Prisma 6 |
-| Auth | Auth.js v5 — Google/Apple for shoppers, credentials for merchants and admins |
+| Auth | Auth.js v5 — Google/Apple or email + password, on both the shopper and merchant surfaces |
 | Styling | Tailwind CSS |
 | Validation | Zod at every mutation boundary |
 
@@ -51,6 +51,20 @@ Generate a secret with `openssl rand -base64 32`.
 Full detail in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); open questions in
 [`docs/DECISIONS.md`](docs/DECISIONS.md). The points worth knowing before you
 touch the code:
+
+**Anyone can sign up, and anyone who signs up can list a store.** Registration
+creates a real account — social through the provider, or email and password
+through `registerWithPassword` — and `createStore` turns any signed-in account
+into an owner with a published Store Card. Before this, `prisma/seed.ts` was the
+only thing in the repository that could write a `User`, a `Store` or a
+`Product`, which meant every tile in the directory was necessarily fictional.
+
+**Middleware reads the session through `src/auth.config.ts`, never `src/auth.ts`.**
+Middleware runs on the edge runtime and Prisma does not, so importing the full
+config there made every `auth()` call throw and silently resolve to "signed
+out" — the portal and the admin console were unreachable with any account. The
+edge config only decodes the JWT; the fresh per-request read of role and status
+stays in `src/lib/authz.ts`, which is where the guards that matter already live.
 
 **The directory is the front door.** There is no gateway or role chooser in
 front of the catalogue. Asking a visitor to classify themselves before they have
@@ -108,6 +122,15 @@ gets an in-portal banner with one-click revert.
 **Thread URLs never encode the board slug.** Admins can move threads between
 boards; a slug in the URL would break every existing link on each move.
 
+**The portal gates on owning a store, not on holding a role.** `/merchant` is
+guarded by `ownStoreOrOnboard()`, which sends an account with no store to
+`/merchant/new` and an account with one back into the portal. The role in the
+JWT cannot do that job: `createStore` promotes a shopper to owner, and the token
+does not learn that until it rotates, so a role check in middleware would chase
+the page's redirect in a loop. Server actions still use the throwing
+`requireOwnStore()` — a 403 is the right answer to a POST, an onboarding form is
+not.
+
 **The unlisted admin path is not access control.** `/tg-admin` is a convenience.
 An unguessable path leaks through referrers, history, proxy logs and
 screenshots. The real controls are the role check in `src/middleware.ts` (which
@@ -140,7 +163,7 @@ Honest list, so nobody mistakes scaffolding for a finished product:
 - **Payments.** Tier and billing status are modelled; no processor is wired up. Tier prices are unset, which blocks the work rather than the reverse.
 - **Image pipeline.** Uploads are stored as data URIs so the app runs with no object storage. Production needs presigned upload, server-side re-encode, EXIF strip, and a minimum-dimension gate. Blocked on choosing a storage provider.
 - **Email delivery in production.** The sending seam, templates and call sites exist (`src/lib/email.ts`); with no `RESEND_API_KEY` set, messages are written to the server log instead of sent. Swapping in Postmark or SES means replacing one function.
-- **Browser-level end-to-end tests.** 80 database-free tests cover authorization on every server action, the URL allowlist and the rate limiter; 22 more run against real Postgres in CI. Nothing drives an actual browser.
+- **Browser-level end-to-end tests.** 92 database-free tests cover authorization on every server action, account creation, the URL allowlist and the rate limiter; 22 more run against real Postgres in CI. Nothing drives an actual browser.
 
 Sequenced plan for the above, with approaches and dependencies:
 [`docs/BACKEND_PLAN.md`](docs/BACKEND_PLAN.md).
@@ -156,7 +179,7 @@ src/
   actions/             server actions — every mutation, Zod-validated
     account.ts         self-service data export and account deletion
     admin.ts           override, verification, suspension, moderation, boards
-    auth.ts            password reset request + redemption
+    auth.ts            sign-up, password reset request + redemption
     community.ts       threads, comments, votes, likes, board prefs, reports
     merchant.ts        store card, products, routing, override revert
     shopper.ts         saves, view history, search logging
@@ -164,6 +187,8 @@ src/
     auth.db.test.ts    reset flow against real Postgres
   app/
     page.tsx           the directory — public front door
+    register/          account creation — social or email, then intent
+    merchant/new/      first Store Card; outside the (portal) group by necessity
     r/[code]/          THE RESOLVER — physical scan entry point
     out/s|p/           outbound click loggers — the only writers of click counts
     api/impressions/   viewport-beacon ingest, buffered
@@ -180,6 +205,7 @@ src/
     impressions.ts     buffered impression counter
     rateLimit.ts       fixed-window limiter
     url.ts             http(s) allowlist for every outbound redirect
+  auth.config.ts       edge-safe half of the auth config — middleware uses this
   middleware.ts        route protection
 ```
 
@@ -190,7 +216,7 @@ pass with no services running. `npm run test:db` additionally needs a Postgres
 with the schema and `prisma/sql/constraints.sql` applied. CI runs all five on
 every push and pull request (`.github/workflows/ci.yml`).
 
-The suite is split on purpose. **`npm test`** (80 tests, no database) is
+The suite is split on purpose. **`npm test`** (92 tests, no database) is
 weighted toward authorization: server actions *are* the authorization boundary
 here — middleware only guards page routes, so an action missing its guard is
 reachable by anyone who can POST, whatever the UI shows.

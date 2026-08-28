@@ -14,6 +14,16 @@ import bcrypt from 'bcryptjs';
 // it from. Capturing it here is how the test walks the same path they do.
 const sent = vi.hoisted(() => ({ token: '' }));
 
+// actions/auth.ts imports signIn for the sign-up path. next-auth's env module
+// resolves `next/server` through Next's own bundler aliasing, which vitest does
+// not apply, so loading it here fails the whole file. Nothing under test signs
+// anyone in, so the module is stubbed rather than resolved.
+vi.mock('@/auth', () => ({
+  signIn: vi.fn(async () => undefined),
+  auth: vi.fn(async () => null),
+  signOut: vi.fn(async () => undefined),
+}));
+
 vi.mock('@/lib/email', () => ({
   sendEmail: vi.fn(async () => true),
   passwordResetEmail: vi.fn((input: { to: string; token: string }) => {

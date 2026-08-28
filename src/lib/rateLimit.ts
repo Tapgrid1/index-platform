@@ -45,6 +45,7 @@ export const RULES = {
   'search.log': { limit: 60, windowMs: MINUTE },
   'account.export': { limit: 5, windowMs: DAY },
   'auth.passwordReset': { limit: 5, windowMs: HOUR },
+  'auth.register': { limit: 8, windowMs: HOUR },
 } as const satisfies Record<string, Rule>;
 
 export type RuleName = keyof typeof RULES;

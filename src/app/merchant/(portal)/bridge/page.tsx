@@ -1,9 +1,9 @@
 import { db } from '@/lib/db';
-import { requireOwnStore, hasTier } from '@/lib/authz';
+import { ownStoreOrOnboard, hasTier } from '@/lib/authz';
 import { RoutingControls } from '@/components/RoutingControls';
 
 export default async function BridgePage() {
-  const { user, store } = await requireOwnStore();
+  const { user, store } = await ownStoreOrOnboard();
   const tier = (await db.user.findUnique({ where: { id: user.id }, select: { subscriptionTier: true } }))?.subscriptionTier ?? 'NONE';
 
   if (!hasTier(tier, 'T3')) {

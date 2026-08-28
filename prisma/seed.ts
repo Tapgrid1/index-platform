@@ -129,9 +129,10 @@ async function main() {
         isVerifiedMaker: s.verified,
         verificationState: s.verified ? 'GRANTED' : 'PENDING',
         verifiedAt: s.verified ? new Date() : null,
-        impressionCount: 6000 + Math.floor(Math.random() * 16000),
-        enterClickCount: 300 + Math.floor(Math.random() * 2100),
-        savedCount: 120 + Math.floor(Math.random() * 750),
+        // Counters are left at their schema default of zero. They used to be
+        // randomised into the thousands, and they are read straight into the
+        // merchant dashboard, the CTR on /merchant/analytics and the admin
+        // totals — so seeded fiction was being displayed as measured fact.
       },
     });
     storeIds.set(s.slug, store.id);
@@ -142,8 +143,11 @@ async function main() {
         update: {},
         create: {
           storeId: store.id, sortOrder: i, title, imageUrl: IMG,
-          destinationUrl: `/product/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
-          clickCount: 40 + Math.floor(Math.random() * 380),
+          // Absolute, on the store's own domain. These were relative paths,
+          // which src/lib/url.ts rejects — prefixing https:// yields
+          // https:///product/… , whose hostname is empty — so every seeded
+          // product link was unroutable before it ever reached a merchant.
+          destinationUrl: `https://${s.url}/product/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
         },
       });
     }

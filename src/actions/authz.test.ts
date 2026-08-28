@@ -19,6 +19,7 @@ const session = vi.hoisted(() => ({ current: null as unknown }));
 vi.mock('@/auth', () => ({
   auth: async () => session.current,
   signOut: async () => undefined,
+  signIn: async () => undefined,
 }));
 
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
@@ -32,8 +33,8 @@ vi.mock('next/headers', () => ({ headers: async () => new Headers() }));
 // Any DB call reaching a mock that was not primed is itself a failure signal:
 // it means the guard let the caller through to the data layer.
 const db = vi.hoisted(() => ({
-  store: { findUnique: vi.fn(), update: vi.fn(), findFirst: vi.fn() },
-  user: { findUnique: vi.fn(), update: vi.fn(), delete: vi.fn() },
+  store: { findUnique: vi.fn(), update: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn() },
+  user: { findUnique: vi.fn(), update: vi.fn(), delete: vi.fn(), create: vi.fn() },
   forumBoard: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn(), findFirst: vi.fn() },
   forumThread: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
   forumPost: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
@@ -65,6 +66,7 @@ import * as community from './community';
 import * as merchant from './merchant';
 import * as shopper from './shopper';
 import * as account from './account';
+import * as auth from './auth';
 import { Forbidden } from '@/lib/authz';
 
 const asAnonymous = () => (session.current = null);
@@ -258,5 +260,160 @@ describe('account actions', () => {
 
     await expect(account.deleteMyAccount()).rejects.toThrow(/owns a published store/i);
     expect(db.user.delete).not.toHaveBeenCalled();
+  });
+});
+
+describe('createStore', () => {
+  const valid = {
+    name: 'Kiln & Vessel',
+    monogram: 'kv',
+    story: 'Two potters, one gas kiln.',
+    homeUrl: 'kilnandvessel.com',
+    categoryId: null,
+  };
+
+  const primeWrites = () => {
+    db.store.findMany.mockResolvedValue([]);
+    db.store.create.mockResolvedValue({ id: 'store-new', slug: 'kiln-vessel' });
+    db.user.update.mockResolvedValue({});
+    db.$transaction.mockImplementation(async (ops: unknown) =>
+      Array.isArray(ops) ? Promise.all(ops) : ops,
+    );
+  };
+
+  it('refuses an anonymous caller', async () => {
+    asAnonymous();
+    await expect(merchant.createStore(valid)).rejects.toThrow(Forbidden);
+    expect(db.store.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses a suspended account', async () => {
+    asSuspended();
+    await expect(merchant.createStore(valid)).rejects.toThrow(Forbidden);
+    expect(db.store.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses a second store on an account that already has one', async () => {
+    // Store.ownerId is @unique, so the database refuses this too. The check
+    // exists so the form gets a message rather than a constraint violation —
+    // and this test is what proves the check runs before the write.
+    asOwner();
+    db.store.findUnique.mockResolvedValue({ id: 'store-existing' });
+
+    await expect(merchant.createStore(valid)).rejects.toThrow(/already has a store/i);
+    expect(db.store.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses a storefront URL that is not http(s)', async () => {
+    // The same allowlist the Enter button relies on. A javascript: homeUrl
+    // stored here would be reflected into a Location header later.
+    asShopper();
+    db.store.findUnique.mockResolvedValue(null);
+
+    await expect(
+      merchant.createStore({ ...valid, homeUrl: 'javascript:alert(1)' }),
+    ).rejects.toThrow(/valid http/i);
+    expect(db.store.create).not.toHaveBeenCalled();
+  });
+
+  it('promotes the creating shopper to OWNER', async () => {
+    // The whole point of the action: a Google account arrives as a SHOPPER, and
+    // without this it would be bounced straight back out of the portal.
+    asShopper();
+    db.store.findUnique.mockResolvedValue(null);
+    primeWrites();
+
+    await merchant.createStore(valid);
+
+    expect(db.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { role: 'OWNER' } }),
+    );
+  });
+
+  it('does not demote an admin who creates a store', async () => {
+    asAdmin();
+    db.store.findUnique.mockResolvedValue(null);
+    primeWrites();
+
+    await merchant.createStore(valid);
+
+    expect(db.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { role: 'ADMIN' } }),
+    );
+  });
+
+  it('normalises the monogram and derives a slug', async () => {
+    asShopper();
+    db.store.findUnique.mockResolvedValue(null);
+    primeWrites();
+
+    await merchant.createStore(valid);
+
+    expect(db.store.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          monogram: 'KV',
+          slug: 'kiln-vessel',
+          homeUrl: 'https://kilnandvessel.com/',
+          status: 'PUBLISHED',
+        }),
+      }),
+    );
+  });
+
+  it('suffixes a slug that is already taken', async () => {
+    asShopper();
+    db.store.findUnique.mockResolvedValue(null);
+    primeWrites();
+    db.store.findMany.mockResolvedValue([{ slug: 'kiln-vessel' }, { slug: 'kiln-vessel-2' }]);
+
+    await merchant.createStore(valid);
+
+    expect(db.store.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ slug: 'kiln-vessel-3' }) }),
+    );
+  });
+});
+
+describe('registerWithPassword', () => {
+  const valid = { email: 'New@Example.com', password: 'a-long-enough-password' };
+
+  it('refuses an email that is already registered', async () => {
+    db.user.findUnique.mockResolvedValue({ id: 'u-existing' });
+    await expect(auth.registerWithPassword(valid)).rejects.toThrow(/already exists/i);
+    expect(db.user.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses a password below the reset flow’s minimum', async () => {
+    // Sign-up and reset must agree. A weaker bar here would mean the only way
+    // to get a short password onto an account is to register with one.
+    db.user.findUnique.mockResolvedValue(null);
+    await expect(
+      auth.registerWithPassword({ ...valid, password: 'short' }),
+    ).rejects.toThrow();
+    expect(db.user.create).not.toHaveBeenCalled();
+  });
+
+  it('never stores the password in the clear, and normalises the address', async () => {
+    db.user.findUnique.mockResolvedValue(null);
+    db.user.create.mockResolvedValue({ id: 'u-new' });
+
+    await auth.registerWithPassword(valid);
+
+    const { data } = db.user.create.mock.calls[0][0];
+    expect(data.email).toBe('new@example.com');
+    expect(data.passwordHash).not.toBe(valid.password);
+    expect(data.passwordHash).toMatch(/^\$2[aby]\$/);
+    expect(data.role).toBe('SHOPPER');
+  });
+
+  it('creates an OWNER when the intent is to sell', async () => {
+    db.user.findUnique.mockResolvedValue(null);
+    db.user.create.mockResolvedValue({ id: 'u-new' });
+
+    const result = await auth.registerWithPassword({ ...valid, intent: 'sell' });
+
+    expect(db.user.create.mock.calls[0][0].data.role).toBe('OWNER');
+    expect(result.next).toBe('/merchant/new');
   });
 });

@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { db } from '@/lib/db';
-import { requireOwnStore } from '@/lib/authz';
+import { ownStoreOrOnboard } from '@/lib/authz';
 import { OverrideBanner } from '@/components/OverrideBanner';
 
 const TABS = [
@@ -12,7 +12,7 @@ const TABS = [
 ] as const;
 
 export default async function MerchantLayout({ children }: { children: React.ReactNode }) {
-  const { user, store } = await requireOwnStore();
+  const { user, store } = await ownStoreOrOnboard();
   const tier = (await db.user.findUnique({ where: { id: user.id }, select: { subscriptionTier: true } }))?.subscriptionTier ?? 'NONE';
 
   const notices = await db.overrideNotice.findMany({

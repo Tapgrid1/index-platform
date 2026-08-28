@@ -3,6 +3,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
+import { signIn } from '@/auth';
 import { db } from '@/lib/db';
 import { enforce, subjectFor } from '@/lib/rateLimit';
 import { sendEmail, passwordResetEmail } from '@/lib/email';
@@ -118,4 +119,69 @@ export async function resetPassword(input: { token: string; password: string }) 
   ]);
 
   return { ok: true as const };
+}
+
+/**
+ * Sign-up for credential accounts.
+ *
+ * Until now the register page was a mockup: its form was a GET back to
+ * /register, so the only accounts that ever existed were the ones the seed
+ * script inserted. That is the reason every store tile in the directory is
+ * fictional — nothing in the application could create a user, and without a
+ * user there is no owner, and without an owner there is no store.
+ *
+ * `intent` decides the role at creation. A shopper who later wants to sell is
+ * promoted by createStore instead, because a Google account arrives through the
+ * adapter as a SHOPPER and never passes through here at all.
+ */
+const registerSchema = z.object({
+  email: z.string().trim().toLowerCase().email('Enter a valid email address'),
+  password: passwordSchema,
+  intent: z.enum(['shop', 'sell']).default('shop'),
+});
+
+export async function registerWithPassword(input: {
+  email: string;
+  password: string;
+  intent?: 'shop' | 'sell';
+}) {
+  // Keyed on the caller, before the lookup: an unthrottled sign-up endpoint is
+  // both an account-spam vector and a way to enumerate addresses by timing the
+  // duplicate check.
+  enforce('auth.register', await subjectFor(null));
+
+  const { email, password, intent } = registerSchema.parse(input);
+
+  // Sign-up is the one flow where refusing to say "already registered" buys
+  // nothing: the same fact is discoverable by trying to sign in, and hiding it
+  // only leaves someone stuck on a form that will never succeed.
+  const existing = await db.user.findUnique({ where: { email }, select: { id: true } });
+  if (existing) {
+    throw new Error('An account with that email already exists. Sign in instead.');
+  }
+
+  await db.user.create({
+    data: {
+      email,
+      passwordHash: await bcrypt.hash(password, 12),
+      role: intent === 'sell' ? 'OWNER' : 'SHOPPER',
+    },
+  });
+
+  // Sign-up ends signed in. Passing the plaintext straight to the credentials
+  // provider re-runs the same authorize() path a returning user takes, so there
+  // is no second, weaker way into a session.
+  //
+  // redirect:false so the caller navigates. Letting signIn throw its redirect
+  // here would make the validation errors above unreachable from the form,
+  // since the client cannot tell a thrown redirect from a thrown failure.
+  await signIn('credentials', { email, password, redirect: false });
+
+  // Someone who already declared they are here to sell goes straight to the
+  // store form. Everyone else lands on step 2, which is where this product
+  // deliberately asks intent — after the account exists, not before.
+  return {
+    ok: true as const,
+    next: intent === 'sell' ? '/merchant/new' : '/register?step=2&via=password',
+  };
 }

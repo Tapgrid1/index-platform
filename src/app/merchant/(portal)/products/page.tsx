@@ -1,9 +1,9 @@
-import { requireOwnStore } from '@/lib/authz';
+import { ownStoreOrOnboard } from '@/lib/authz';
 import { db } from '@/lib/db';
 import { ProductSlots } from '@/components/ProductSlots';
 
 export default async function ProductsPage() {
-  const { store } = await requireOwnStore();
+  const { store } = await ownStoreOrOnboard();
   const products = await db.product.findMany({
     where: { storeId: store.id },
     orderBy: { sortOrder: 'asc' },

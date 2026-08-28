@@ -1,9 +1,9 @@
 import { StoreCard } from '@/components/StoreCard';
 import { db } from '@/lib/db';
-import { requireOwnStore } from '@/lib/authz';
+import { ownStoreOrOnboard } from '@/lib/authz';
 
 export default async function MerchantHome() {
-  const { store } = await requireOwnStore();
+  const { store } = await ownStoreOrOnboard();
   const full = await db.store.findUniqueOrThrow({
     where: { id: store.id },
     select: {
