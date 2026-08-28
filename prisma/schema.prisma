@@ -6,9 +6,20 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// Two connections on purpose, for a pooled host such as Supabase or Neon.
+//
+// `url` is the transaction pooler and is what every request uses: on serverless
+// each function instance would otherwise open its own pool straight at Postgres
+// and exhaust the connection limit under any real traffic. That pooler cannot
+// run DDL and does not support prepared statements, so the pooled URL needs
+// `?pgbouncer=true` and `prisma db push` needs somewhere else to go.
+//
+// `directUrl` is that somewhere else — a direct connection, used only by db
+// push and migrate, never on the request path.
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 // ─────────────────────────── enums ───────────────────────────

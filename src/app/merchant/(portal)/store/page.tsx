@@ -1,9 +1,9 @@
-import { requireOwnStore } from '@/lib/authz';
+import { ownStoreOrOnboard } from '@/lib/authz';
 import { db } from '@/lib/db';
 import { StoreCardForm } from '@/components/StoreCardForm';
 
 export default async function EditStoreCardPage() {
-  const { store } = await requireOwnStore();
+  const { store } = await ownStoreOrOnboard();
   const [full, categories] = await Promise.all([
     db.store.findUniqueOrThrow({ where: { id: store.id } }),
     db.category.findMany({ orderBy: { sortOrder: 'asc' } }),

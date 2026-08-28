@@ -7,7 +7,7 @@ import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { db } from '@/lib/db';
 import { appleClientSecret } from '@/lib/appleSecret';
-import type { Role } from '@prisma/client';
+import { authConfig } from '@/auth.config';
 
 const credentialsSchema = z.object({
   email: z.string().email(),
@@ -15,9 +15,8 @@ const credentialsSchema = z.object({
 });
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
+  ...authConfig,
   adapter: PrismaAdapter(db),
-  session: { strategy: 'jwt' },
-  pages: { signIn: '/register' },
   providers: [
     // Shopper path. Social only: no password to store, none to leak.
     Google,
@@ -48,6 +47,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     }),
   ],
   callbacks: {
+    ...authConfig.callbacks,
     async jwt({ token, user }) {
       if (user?.id) token.uid = user.id;
       if (token.uid) {
@@ -78,14 +78,6 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         token.role = fresh.role;
       }
       return token;
-    },
-    async session({ session, token }) {
-      if (session.user) {
-        session.user.id = token.uid as string;
-        session.user.role = token.role as Role;
-        session.user.status = token.status as string;
-      }
-      return session;
     },
   },
 });

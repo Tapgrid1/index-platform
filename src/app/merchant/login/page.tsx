@@ -41,6 +41,34 @@ export default async function MerchantLogin({
       >
         Forgot your password?
       </Link>
+
+      <div className="my-6 flex items-center gap-3 font-mono text-[10.5px] tracking-[0.1em] text-ink-4">
+        <span className="h-px flex-1 bg-line" />OR<span className="h-px flex-1 bg-line" />
+      </div>
+
+      {/* Owners who signed up socially have no password to type. Offering only
+          the credentials form here left them with no way in at all. */}
+      <Provider provider="google" label="Continue with Google" />
+      <Provider provider="apple" label="Continue with Apple" />
+
+      <p className="mt-6 text-[12.5px] text-ink-3">
+        No account yet? <Link href="/register?intent=sell" className="underline underline-offset-4">List your store</Link>.
+      </p>
     </main>
+  );
+}
+
+function Provider({ provider, label }: { provider: 'google' | 'apple'; label: string }) {
+  return (
+    <form
+      action={async () => {
+        'use server';
+        await signIn(provider, { redirectTo: '/merchant' });
+      }}
+    >
+      <button className="mb-2.5 h-11 w-full rounded-sm border border-line text-[13.5px] font-medium transition hover:border-ink hover:bg-wash">
+        {label}
+      </button>
+    </form>
   );
 }

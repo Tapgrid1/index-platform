@@ -2,13 +2,20 @@
 
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
-import { updateStoreCard } from '@/actions/merchant';
+import { createStore, updateStoreCard } from '@/actions/merchant';
 
+/**
+ * Shared by the edit page and by onboarding. The two differ only in which
+ * action they call and where they go afterwards — the fields, the 150-character
+ * counter and the URL hint are identical, and a second copy of them would drift
+ * from this one the first time the story cap moved.
+ */
 export function StoreCardForm({
-  initial, categories,
+  initial, categories, mode = 'edit',
 }: {
   initial: { name: string; monogram: string; story: string; homeUrl: string; categoryId: string | null };
   categories: { id: string; name: string }[];
+  mode?: 'edit' | 'create';
 }) {
   const [f, setF] = useState(initial);
   const [msg, setMsg] = useState('');
@@ -23,8 +30,13 @@ export function StoreCardForm({
         e.preventDefault();
         start(async () => {
           try {
-            await updateStoreCard(f);
-            setMsg('Saved — the public card is updated.');
+            if (mode === 'create') {
+              await createStore(f);
+              router.push('/merchant');
+            } else {
+              await updateStoreCard(f);
+              setMsg('Saved — the public card is updated.');
+            }
             router.refresh();
           } catch (err) {
             setMsg(err instanceof Error ? err.message : 'Could not save');
@@ -65,9 +77,19 @@ export function StoreCardForm({
       </Field>
 
       <button disabled={pending} className="h-10 rounded-sm bg-ink px-5 text-[13.5px] font-medium text-white disabled:opacity-50">
-        {pending ? 'Saving…' : 'Save changes'}
+        {pending
+          ? 'Saving…'
+          : mode === 'create'
+            ? 'Publish my store'
+            : 'Save changes'}
       </button>
       {msg && <p className="font-mono text-[11.5px] text-ink-3">{msg}</p>}
+      {mode === 'create' && (
+        <p className="font-mono text-[11px] leading-relaxed text-ink-4">
+          Submitting publishes the card to the directory immediately. You can edit
+          every field afterwards from the portal.
+        </p>
+      )}
     </form>
   );
 }

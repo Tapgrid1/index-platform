@@ -1,6 +1,7 @@
+import NextAuth from 'next-auth';
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import { auth } from '@/auth';
+import { authConfig } from '@/auth.config';
 
 /**
  * Route protection. The unlisted /tg-admin path is a convenience, NOT access
@@ -8,7 +9,14 @@ import { auth } from '@/auth';
  * proxy logs and screenshots. The real controls are the role check here, the
  * noindex header in next.config.mjs, and (in deployment) a separate origin,
  * mandatory MFA and an IP allowlist.
+ *
+ * The session is read through the edge-safe config, NOT through '@/auth'.
+ * Importing the full instance pulled the Prisma adapter into the edge runtime,
+ * where it cannot run: every auth() call threw, every check below saw "no
+ * session", and the portal and admin console were unreachable for everyone.
+ * See src/auth.config.ts.
  */
+const { auth } = NextAuth(authConfig);
 const MERCHANT_PUBLIC = new Set(['/merchant/login', '/merchant/forgot', '/merchant/reset']);
 
 export default async function middleware(req: NextRequest) {
@@ -33,9 +41,18 @@ export default async function middleware(req: NextRequest) {
     if (!session || !active) {
       return NextResponse.redirect(new URL('/merchant/login', req.url));
     }
-    if (role !== 'OWNER' && role !== 'ADMIN') {
-      return NextResponse.redirect(new URL('/register?intent=sell', req.url));
-    }
+    // Deliberately no role check here, unlike /tg-admin above.
+    //
+    // Owning a store, not holding a role, is what the portal actually gates on,
+    // and that is resolved per-request by ownStoreOrOnboard(): no store sends
+    // you to /merchant/new, and having one sends you back out of it. A role
+    // check in middleware cannot do the same job, because the role it reads is
+    // the one stamped into the JWT at sign-in — createStore promotes a SHOPPER
+    // to OWNER, and the token does not learn that until it rotates, so the two
+    // redirects would chase each other in a loop.
+    //
+    // Sending a shopper who wandered in to the store form is also the right
+    // answer on its own: /merchant is where "list my store" points.
   }
 
   if (pathname.startsWith('/archive') && (!session || !active)) {

@@ -3,7 +3,7 @@
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { db } from '@/lib/db';
-import { requireOwnStore, hasTier } from '@/lib/authz';
+import { requireUser, requireOwnStore, hasTier } from '@/lib/authz';
 import { safeExternalUrl } from '@/lib/url';
 
 /** The 150-character cap is enforced here AND at the database. A UI-only limit
@@ -15,6 +15,85 @@ const storeSchema = z.object({
   homeUrl: z.string().trim().min(4).max(200),
   categoryId: z.string().optional().nullable(),
 });
+
+/**
+ * Store creation — the write path that did not exist.
+ *
+ * Until now nothing in the application created a Store: every merchant action
+ * was gated behind requireOwnStore, which resolves a store that something else
+ * had to have inserted. That something else was only ever prisma/seed.ts, which
+ * is why every tile in the directory was fictional.
+ *
+ * Guarded by requireUser rather than requireOwnStore for the obvious reason —
+ * the caller has no store yet, that is the point.
+ */
+export async function createStore(input: z.infer<typeof storeSchema>) {
+  const user = await requireUser();
+  const data = storeSchema.parse(input);
+
+  // One store per account. Store.ownerId is @unique, so the database refuses a
+  // second one regardless; this check is here to answer with something a form
+  // can display instead of a constraint violation.
+  const existing = await db.store.findUnique({ where: { ownerId: user.id }, select: { id: true } });
+  if (existing) throw new Error('This account already has a store.');
+
+  const homeUrl = safeExternalUrl(data.homeUrl);
+  if (!homeUrl) throw new Error('Enter a valid http(s) storefront URL');
+
+  const slug = await uniqueSlug(data.name);
+
+  // Creating the store and promoting the owner must not be separable: a store
+  // whose owner is still a SHOPPER is one middleware bounces out of the portal
+  // it just sent them to.
+  const [store] = await db.$transaction([
+    db.store.create({
+      data: {
+        ...data,
+        slug,
+        homeUrl,
+        monogram: data.monogram.toUpperCase(),
+        ownerId: user.id,
+        // Auto-publish on submission, per docs/DECISIONS.md D2. Every counter
+        // is left at its schema default of zero — a new store has earned no
+        // impressions, and inventing some is what made the seeded cards fake.
+        status: 'PUBLISHED',
+      },
+      select: { id: true, slug: true },
+    }),
+    db.user.update({
+      where: { id: user.id },
+      data: { role: user.role === 'SHOPPER' ? 'OWNER' : user.role },
+    }),
+  ]);
+
+  revalidatePath('/');
+  revalidatePath('/merchant');
+
+  return { ok: true as const, storeId: store.id, slug: store.slug };
+}
+
+/**
+ * Store.slug is unique and public, so a second "Kiln & Vessel" cannot simply
+ * take the same one. Suffix rather than reject: the merchant chose a name, not
+ * a URL, and failing their submission over a stranger's collision is a bad
+ * trade.
+ */
+async function uniqueSlug(name: string) {
+  const base = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'store';
+
+  const taken = new Set(
+    (await db.store.findMany({
+      where: { slug: { startsWith: base } },
+      select: { slug: true },
+    })).map((s) => s.slug),
+  );
+
+  if (!taken.has(base)) return base;
+  for (let n = 2; ; n++) {
+    const candidate = `${base}-${n}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
 
 export async function updateStoreCard(input: z.infer<typeof storeSchema>) {
   const { store } = await requireOwnStore();

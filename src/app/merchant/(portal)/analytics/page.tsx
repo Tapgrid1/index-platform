@@ -1,8 +1,8 @@
 import { db } from '@/lib/db';
-import { requireOwnStore, hasTier } from '@/lib/authz';
+import { ownStoreOrOnboard, hasTier } from '@/lib/authz';
 
 export default async function AnalyticsPage() {
-  const { user, store } = await requireOwnStore();
+  const { user, store } = await ownStoreOrOnboard();
   const tier = (await db.user.findUnique({ where: { id: user.id }, select: { subscriptionTier: true } }))?.subscriptionTier ?? 'NONE';
   const advanced = hasTier(tier, 'T2');
 
