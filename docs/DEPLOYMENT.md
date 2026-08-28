@@ -24,6 +24,21 @@ point the two URLs at different endpoints, as `prisma/schema.prisma` explains:
 The pooler cannot run DDL and does not support prepared statements. With no
 pooler in play, set both to the same value.
 
+### Mapping Neon's injected variables
+
+The Neon integration in the Vercel marketplace injects its own variable names,
+and none of them is `DIRECT_URL`. Adding the integration alone therefore leaves
+the app with no direct connection, so copy the two values across by hand:
+
+| This app reads | Set it to the value Neon injects as |
+|---|---|
+| `DATABASE_URL` | `POSTGRES_PRISMA_URL` — pooled, already carries `pgbouncer=true` |
+| `DIRECT_URL` | `POSTGRES_URL_NON_POOLING` |
+
+Neon also injects a `DATABASE_URL` of its own, pointing at the pooler without
+the `pgbouncer=true` parameter. Prisma will then try to use prepared statements
+the pooler cannot handle, so overwrite it rather than leaving it as delivered.
+
 There is no `prisma/migrations` directory yet, so the schema is created by push
 rather than by migration. Run this once against the new database, from a machine
 that has the repo checked out:
@@ -62,7 +77,9 @@ Optional, each independently:
 
 ## 3. Project settings
 
-Framework detection handles the rest; no `vercel.json` is needed.
+The live project is `tapgrid-index-platform` in the `tapgrid-projects` team,
+linked to this repository, so every push builds a preview and `main` builds
+production. Framework detection handles the rest; no `vercel.json` is needed.
 
 - Build command: `npm run build`, which is `prisma generate && next build`. The
   generate step matters — Vercel restores `node_modules` from cache between
