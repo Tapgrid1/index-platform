@@ -32,6 +32,9 @@ jobs:
 
     env:
       DATABASE_URL: postgresql://ci:ci@localhost:5432/index_test?schema=public
+      # The datasource declares directUrl, so prisma fails outright when this is
+      # unset. No pooler here, so both point at the same server.
+      DIRECT_URL: postgresql://ci:ci@localhost:5432/index_test?schema=public
       AUTH_SECRET: ci-placeholder-secret-not-used-at-runtime
 
     steps:
