@@ -1,0 +1,121 @@
+# Applies the schema, the CHECK constraints and the seed to a hosted database.
+#
+# Manual only. This writes to whatever database the repository secrets point at,
+# which in practice is production, so it must never fire on a push — and the
+# confirmation input below exists so it is not one stray click away either.
+#
+# It exists because the three commands need a network route to the database that
+# neither a Vercel build nor a local checkout necessarily has. A runner does.
+name: Prepare database
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "prepare" to confirm writing to the database'
+        required: true
+        default: ''
+      seed:
+        description: 'Also run the seed (8 stores, forum content, 2 scan placements)'
+        type: boolean
+        required: true
+        default: true
+
+# Two runs writing the same tables at once would interleave. One at a time.
+concurrency:
+  group: prepare-database
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+
+    env:
+      # Every step here talks to the DIRECT connection, port 5432, not the
+      # pooled one. DDL cannot go through Supabase's transaction pooler at all,
+      # and pointing the seed at it too avoids the prepared-statement limits the
+      # pooler imposes. The pooled URL is what the running app uses; a one-off
+      # bulk job is not what it is for.
+      DATABASE_URL: ${{ secrets.DIRECT_URL }}
+      DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL }}
+      ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+
+    steps:
+      - name: Check the confirmation
+        if: inputs.confirm != 'prepare'
+        run: |
+          echo "::error::Type 'prepare' in the confirm field to run this. It writes to the production database."
+          exit 1
+
+      - name: Check the secrets are present
+        run: |
+          missing=()
+          [ -n "$DIRECT_URL" ] || missing+=(DIRECT_URL)
+          [ -n "$ADMIN_PASSWORD" ] || missing+=(ADMIN_PASSWORD)
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing repository secrets: ${missing[*]}"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # psql and Prisma do not accept the same connection string. Prisma-only
+      # query parameters (?schema=, ?pgbouncer=, connection_limit) make libpq
+      # fail outright with "invalid URI query parameter", so strip them for the
+      # psql steps while leaving real libpq options such as sslmode alone.
+      - name: Derive a psql-safe connection string
+        run: |
+          PSQL_URL=$(python3 - <<'PY'
+          import os, urllib.parse as u
+          parts = u.urlsplit(os.environ['DIRECT_URL'])
+          prisma_only = {'schema', 'pgbouncer', 'connection_limit', 'pool_timeout',
+                         'statement_cache_size', 'socket_timeout'}
+          query = [(k, v) for k, v in u.parse_qsl(parts.query, keep_blank_values=True)
+                   if k not in prisma_only]
+          print(u.urlunsplit((parts.scheme, parts.netloc, parts.path, u.urlencode(query), parts.fragment)))
+          PY
+          )
+          # Derived from a secret but not identical to it, so mask it explicitly
+          # before it can reach a log line.
+          echo "::add-mask::$PSQL_URL"
+          echo "PSQL_URL=$PSQL_URL" >> "$GITHUB_ENV"
+
+      # No --accept-data-loss on purpose: a change that would drop existing rows
+      # should fail this run rather than quietly perform it.
+      - name: Apply the schema
+        run: npx prisma db push --skip-generate
+
+      # ON_ERROR_STOP=1 matters more than it looks. These statements silently
+      # no-op'd for months when one referenced a column name that did not exist,
+      # so the five-slot cap the schema documents was never enforced.
+      - name: Apply the CHECK constraints
+        run: psql "$PSQL_URL" -v ON_ERROR_STOP=1 --single-transaction -f prisma/sql/constraints.sql
+
+      # Every write in the seed is an upsert, so re-running is safe.
+      - name: Seed
+        if: inputs.seed
+        run: npm run db:seed
+
+      - name: Report what is in the database
+        run: |
+          psql "$PSQL_URL" -v ON_ERROR_STOP=1 -c "
+            SELECT
+              (SELECT count(*) FROM stores)     AS stores,
+              (SELECT count(*) FROM products)   AS products,
+              (SELECT count(*) FROM users)      AS users,
+              (SELECT count(*) FROM ad_placements) AS placements;
+          "
+          echo "Constraints now present:"
+          psql "$PSQL_URL" -Atc "
+            SELECT conname FROM pg_constraint
+            WHERE contype = 'c' AND connamespace = 'public'::regnamespace
+            ORDER BY conname;
+          "
