@@ -40,6 +40,9 @@ jobs:
       DIRECT_URL: ${{ secrets.DIRECT_URL }}
       ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL }}
       ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+      # Optional. Set this secret to give the one demo merchant a working
+      # login; leave it unset and no seeded merchant can be signed in as.
+      DEMO_PASSWORD: ${{ secrets.DEMO_PASSWORD }}
 
     steps:
       - name: Check the confirmation

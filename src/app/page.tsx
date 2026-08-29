@@ -9,7 +9,15 @@ import { publishedStores, savedIdsFor, spotlightStore } from '@/lib/queries';
  * have seen a single store is the highest-friction possible first screen for a
  * product whose central problem is getting shoppers to arrive.
  */
-export default async function DirectoryPage() {
+export default async function DirectoryPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ farewell?: string }>;
+}) {
+  // deleteMyAccount redirects here with ?farewell=1. Nothing read it, so
+  // deleting an account dropped you on an unchanged homepage with no signal
+  // that the thing you just did had happened.
+  const { farewell } = await searchParams;
   const user = await currentUser();
   const [stores, saved, spotlight] = await Promise.all([
     publishedStores(),
@@ -21,6 +29,14 @@ export default async function DirectoryPage() {
     <>
       <Header />
       <main className="mx-auto max-w-[1280px] px-6 md:px-10">
+        {farewell && (
+          <div className="mt-6 border border-line bg-wash p-4 text-[13.5px] text-ink-2">
+            <b className="text-ink">Your account is deleted.</b> Saved stores, view
+            history and search history are gone. Browsing never needed an account —
+            you are welcome to keep looking around.
+          </div>
+        )}
+
         {spotlight && (
           <section className="my-9 grid min-h-[340px] grid-cols-1 border border-line md:grid-cols-2">
             <div className="flex flex-col justify-center p-10 md:p-12">

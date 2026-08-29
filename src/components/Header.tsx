@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { signOut } from '@/auth';
 import { db } from '@/lib/db';
 import { currentUser } from '@/lib/authz';
 
@@ -44,16 +45,36 @@ export async function Header({ activePill }: { activePill?: string }) {
                 <Link href="/archive" className="flex h-9 items-center rounded-sm border border-line px-4 text-[13.5px] hover:border-ink">
                   My Archive
                 </Link>
-                <Link
-                  href={user.role === 'OWNER' ? '/merchant' : '/archive'}
-                  className="flex h-9 items-center rounded-sm bg-ink px-4 text-[13.5px] font-medium text-white"
-                >
-                  {user.role === 'OWNER' ? 'Merchant Portal' : 'Account'}
+                {/* Was an "Account" button pointing back at /archive. It now goes
+                    where the export and delete-account controls actually live. */}
+                <Link href="/settings" className="flex h-9 items-center rounded-sm border border-line px-4 text-[13.5px] hover:border-ink">
+                  Settings
                 </Link>
+                {user.role === 'OWNER' && (
+                  <Link
+                    href="/merchant"
+                    className="flex h-9 items-center rounded-sm bg-ink px-4 text-[13.5px] font-medium text-white"
+                  >
+                    Merchant Portal
+                  </Link>
+                )}
+                {/* Sessions are JWTs and nothing in the UI ended one, so a
+                    signed-in browser stayed signed in indefinitely — and a
+                    second person on the same machine never got a turn. */}
+                <form
+                  action={async () => {
+                    'use server';
+                    await signOut({ redirectTo: '/' });
+                  }}
+                >
+                  <button className="flex h-9 items-center rounded-sm border border-line px-4 text-[13.5px] hover:border-ink">
+                    Sign out
+                  </button>
+                </form>
               </>
             ) : (
               <>
-                <Link href="/merchant/login" className="flex h-9 items-center rounded-sm border border-line px-4 text-[13.5px] hover:border-ink">
+                <Link href="/signin" className="flex h-9 items-center rounded-sm border border-line px-4 text-[13.5px] hover:border-ink">
                   Sign in
                 </Link>
                 <Link href="/register" className="flex h-9 items-center rounded-sm bg-ink px-4 text-[13.5px] font-medium text-white">
