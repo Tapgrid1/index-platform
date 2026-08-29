@@ -24,6 +24,21 @@ const COLLECTIONS = [
 
 const IMG = 'https://images.unsplash.com/photo-1493106641515-6b5631de4bb9?w=800&q=70';
 
+/**
+ * Exactly one seeded merchant can be signed in as, and only when DEMO_PASSWORD
+ * is set. The other seven own their store cards and nothing else.
+ *
+ * Every one of them used to share the string 'demo-password-change-me',
+ * committed to this repository — so anyone who read it could sign in as any
+ * merchant and edit that store's homeUrl, which is the URL every shopper who
+ * clicks Enter is redirected to. Impersonation and an open redirect, published.
+ *
+ * Ninth Hour is the one worth keeping: Store of the Week, the only T3 tier, and
+ * the owner of both scan placements, so it is the account that can actually
+ * demonstrate the portal.
+ */
+const DEMO_LOGIN_SLUG = 'ninth-hour-candle';
+
 type Seed = {
   slug: string; name: string; mono: string; story: string; url: string;
   category: string; tier: Tier; verified: boolean; collections: string[];
@@ -83,6 +98,13 @@ async function main() {
     },
   });
 
+  const demoPassword = process.env.DEMO_PASSWORD;
+  console.log(
+    demoPassword
+      ? `Demo merchant login enabled for ${DEMO_LOGIN_SLUG} only.`
+      : 'DEMO_PASSWORD unset — no seeded merchant can sign in. Store cards are unaffected.',
+  );
+
   const categories = new Map<string, string>();
   for (const [i, name] of CATEGORIES.entries()) {
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
@@ -107,16 +129,23 @@ async function main() {
 
   const storeIds = new Map<string, string>();
   for (const s of STORES) {
+    const passwordHash =
+      s.slug === DEMO_LOGIN_SLUG && demoPassword ? await bcrypt.hash(demoPassword, 12) : null;
+
     const owner = await db.user.upsert({
       where: { email: `owner@${s.url}` },
-      update: {},
+      // `update` carries passwordHash on purpose, where it used to be empty. A
+      // re-run has to be able to REMOVE a password, not only set one: on any
+      // database seeded before this change, an empty update would leave all
+      // eight of the old shared-password rows exactly as they are.
+      update: { passwordHash },
       create: {
         email: `owner@${s.url}`,
         name: s.name,
         role: 'OWNER',
         subscriptionTier: s.tier,
         billingStatus: 'ACTIVE',
-        passwordHash: await bcrypt.hash('demo-password-change-me', 12),
+        passwordHash,
       },
     });
 
