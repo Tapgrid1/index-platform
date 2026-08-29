@@ -1,6 +1,11 @@
 node_modules/
 .next/
-out/
+# Anchored to the repo root on purpose. Unanchored, `out/` also matches
+# src/app/out/ — the outbound click-logger routes — and git silently refuses to
+# add them, which is the likeliest reason those routes went missing for so long
+# while the UI linked to them on every card. The Next.js static export this rule
+# is for only ever lands at the top level.
+/out/
 build/
 .env
 .env*.local
